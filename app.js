@@ -1,8 +1,10 @@
 /* =========================================================================
  * 指数估值 · 行情分析  —  纯前端静态站 (GitHub Pages)
  * 行情/点位：东方财富 JSONP 接口（callback 绕过 CORS，实时）
- * 估值 PE/PB：data/<code>.json（由 GitHub Actions 跑 akshare 每日预生成）
+ * 估值 PE/PB/股息率：data/<code>.json（由 GitHub Actions 每日预生成）
  * ========================================================================= */
+
+const Core = window.ValuationCore;
 
 /* ---------- 1. 主流指数清单（单一数据源：indexes.json） ----------
  * 首页卡片、本地搜索、以及数据脚本 scripts/build_data.py 都读这份清单。
@@ -102,7 +104,7 @@ const valDataCache = {};
 async function loadValuation(code) {
   if (code in valDataCache) return valDataCache[code];
   try {
-    const r = await fetch("./data/" + code + ".json", { cache: "no-cache" });
+    const r = await fetch("./data/" + code + ".json?v=20260614-7", { cache: "no-store" });
     if (!r.ok) throw new Error("404");
     const j = await r.json();
     valDataCache[code] = j;
@@ -113,37 +115,7 @@ async function loadValuation(code) {
   }
 }
 
-/* ---------- 4. 分位统计引擎 ---------- */
-function quantile(sortedAsc, p) {
-  if (!sortedAsc.length) return null;
-  const idx = (sortedAsc.length - 1) * p;
-  const lo = Math.floor(idx), hi = Math.ceil(idx);
-  if (lo === hi) return sortedAsc[lo];
-  return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo);
-}
-function analyze(values) {
-  const v = values.filter((x) => x != null && isFinite(x));
-  if (!v.length) return null;
-  const sorted = [...v].sort((a, b) => a - b);
-  const cur = v[v.length - 1];
-  const n = v.length;
-  const mean = v.reduce((a, b) => a + b, 0) / n;
-  const std = Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
-  const below = sorted.filter((x) => x <= cur).length;
-  return {
-    current: cur,
-    percentile: (below / n) * 100,        // 当前所处历史分位
-    danger: quantile(sorted, 0.7),         // 危险值（高估，70% 分位）
-    median: quantile(sorted, 0.5),         // 中位值
-    chance: quantile(sorted, 0.3),         // 机会值（低估，30% 分位）
-    max: sorted[sorted.length - 1],
-    min: sorted[0],
-    mean, std,
-    z: std ? (cur - mean) / std : 0,
-  };
-}
-
-/* ---------- 5. 格式化 ---------- */
+/* ---------- 4. 格式化 ---------- */
 const fmt = (x, d = 2) => (x == null || !isFinite(x) ? "—" : x.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const fmtPct = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + x.toFixed(2) + "%");
 const cls = (x) => (x == null ? "flat" : x > 0 ? "up" : x < 0 ? "down" : "flat");
@@ -153,6 +125,8 @@ const view = document.getElementById("view");
 function router() {
   const hash = location.hash || "#/";
   const m = hash.match(/^#\/idx\/(.+)$/);
+  // 详情页展开成宽幅工作台，首页保持窄容器（见 styles.css 的 #view.view-wide）
+  view.classList.toggle("view-wide", Boolean(m));
   if (m) renderDetail(decodeURIComponent(m[1]));
   else renderHome();
 }
@@ -165,7 +139,7 @@ async function renderHome() {
   view.innerHTML = `
     <section class="hero">
       <h1>指数估值 · 行情分析</h1>
-      <p>搜索任意指数，查看实时点位、涨跌，以及历史点位 / PE / PB 分位分析。</p>
+      <p>搜索任意指数，查看实时点位、涨跌，以及历史点位 / PE / PB / 股息率分位分析。</p>
     </section>
     <div class="section-title">主流指数 <small>点击查看分位分析</small></div>
     <div class="grid" id="grid">${homeList.map(cardSkeleton).join("")}</div>
@@ -203,125 +177,236 @@ const RANGES = [
   { k: "3Y", label: "3年", days: 365 * 3 },
   { k: "5Y", label: "5年", days: 365 * 5 },
   { k: "10Y", label: "10年", days: 365 * 10 },
-  { k: "ALL", label: "全部", days: 1e9 },
+  { k: "ALL", label: "上市以来", days: 1e9 },
+  { k: "CUSTOM", label: "自定义", days: null },
 ];
-let curRange = "10Y";
-let curMetric = "close";   // close | pe | pb
-
-const METRIC_LABEL = { close: "点位", pe: "市盈率 PE", pb: "市净率 PB" };
+const METRICS = {
+  close: { label: "指数点位", short: "点位", current: "当前点位" },
+  pe: { label: "市盈率 TTM", short: "市盈率", current: "当前 PE" },
+  pb: { label: "市净率 LF", short: "市净率", current: "当前 PB" },
+  dy: { label: "股息率", short: "股息率", current: "当前股息率", unit: "%", higherIsBetter: true },
+};
+const detailState = {
+  range: "10Y",
+  metric: "close",
+  period: "D",
+  ma: 0,
+  view: "stats",
+  showQuantiles: true,
+  showStd: false,
+  customStart: "",
+  customEnd: "",
+};
 
 async function renderDetail(secid) {
   const known = POPULAR.find((p) => p.secid === secid);
   view.innerHTML = `<div class="loading">加载中…</div>`;
-  let quote, kdata;
-  try {
-    [quote, kdata] = await Promise.all([EM.quote(secid).catch(() => null), EM.kline(secid)]);
-  } catch (e) {
-    view.innerHTML = `<div class="error">数据加载失败，请检查指数代码或网络。<br><a class="back" href="#/">返回首页</a></div>`;
-    return;
-  }
-  if (!kdata || !kdata.rows.length) {
-    view.innerHTML = `<div class="error">未找到该指数的历史数据。<br><a class="back" href="#/">返回首页</a></div>`;
-    return;
-  }
-  klineCache[secid] = kdata;
-  const name = (quote && quote.name) || kdata.name || (known && known.name) || secid;
+  // 行情（东方财富）与历史 K 线都可能失败：都不致命，逐一降级。
+  let quote = null, kdata = null;
+  [quote, kdata] = await Promise.all([
+    EM.quote(secid).catch(() => null),
+    EM.kline(secid).catch(() => null),
+  ]);
+  const name = (quote && quote.name) || (kdata && kdata.name) || (known && known.name) || secid;
   const code = (quote && quote.code) || (known && known.code) || secid.split(".")[1];
-  curMetric = "close";
+
+  // 历史点位优先用 CI 预生成的静态 close（多源兜底），实时 kline 仅作补充。
+  const val = await loadValuation(code);
+  klineCache[secid] = kdata && kdata.rows && kdata.rows.length ? kdata : { rows: [] };
+  const hasPoint = !!(val && Core.hasSeries(val.close)) || klineCache[secid].rows.length > 0;
+  const hasVal = !!(val && (Core.hasSeries(val.pe) || Core.hasSeries(val.pb) || Core.hasSeries(val.dy)));
+  if (!hasPoint && !hasVal) {
+    view.innerHTML = `<div class="error">未找到该指数的历史数据，且实时行情接口暂时不可用，请稍后重试。<br><a class="back" href="#/">返回首页</a></div>`;
+    return;
+  }
+  const defaultMetric = hasPoint ? "close" : Core.hasSeries(val.pe) ? "pe" : Core.hasSeries(val.pb) ? "pb" : "dy";
+  Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "D", ma: 0, view: "stats", showQuantiles: true, showStd: false, customStart: "", customEnd: "" });
 
   view.innerHTML = `
-    <div class="detail-head">
-      <div>
-        <a class="back" href="#/">‹ 返回</a>
-        <div class="nm">${name}</div>
-        <div class="cd">${code} · ${secid}</div>
+    <section class="detail-workspace">
+      <div class="analysis-toolbar">
+        <div class="control-row">
+          <div class="control-group range-control">
+            <span class="control-label">时间范围</span>
+            <div class="segmented" id="rangeTabs">
+              ${RANGES.map((r) => `<button class="segment ${r.k === detailState.range ? "active" : ""}" data-range="${r.k}">${r.label}</button>`).join("")}
+            </div>
+          </div>
+          <div class="control-group metric-control">
+            <span class="control-label">估值指标</span>
+            <div class="segmented" id="metricTabs"><button class="segment active" data-metric="close">指数点位</button></div>
+          </div>
+          <label class="select-control"><span>周期</span><select id="periodSelect"><option value="D">日</option><option value="W">周</option><option value="M">月</option></select></label>
+        </div>
+        <div class="control-row secondary-controls">
+          <div class="segmented view-switch" id="viewTabs">
+            <button class="segment active" data-view="stats">统计分析</button>
+            <button class="segment" data-view="table">明细数据</button>
+          </div>
+          <label class="toggle-control"><input id="quantileToggle" type="checkbox" checked><span>分位线</span></label>
+          <label class="toggle-control"><input id="stdToggle" type="checkbox"><span>标准差</span></label>
+          <label class="select-control"><span>移动平均</span><select id="maSelect"><option value="0">无</option><option value="20">20期</option><option value="60">60期</option><option value="120">120期</option></select></label>
+          <div class="custom-range" id="customRange" hidden>
+            <input id="customStart" type="date" aria-label="开始日期">
+            <span>至</span>
+            <input id="customEnd" type="date" aria-label="结束日期">
+          </div>
+        </div>
       </div>
-      <div style="text-align:right">
-        <div class="price ${cls(quote && quote.pct)}">${fmt(quote && quote.price)}</div>
-        <div class="chg ${cls(quote && quote.pct)}">${quote ? fmtPct(quote.pct) + "  " + (quote.chg >= 0 ? "+" : "") + fmt(quote.chg) : ""}</div>
-      </div>
-    </div>
 
-    <div class="toolbar">
-      <div class="tabs" id="metricTabs">
-        <div class="tab active" data-metric="close">点位分位</div>
-      </div>
-      <div class="range-tabs" id="rangeTabs">
-        ${RANGES.map((r) => `<div class="tab ${r.k === curRange ? "active" : ""}" data-range="${r.k}">${r.label}</div>`).join("")}
-      </div>
-    </div>
+      ${hasPoint ? "" : `<div class="feed-notice">实时行情接口（东方财富）暂时不可用，「指数点位」已置灰，仅展示历史 PE / PB / 股息率分位分析。</div>`}
 
-    <div class="panel-grid">
-      <div class="stats" id="stats"></div>
-      <div class="chart-card">
-        <div id="chart"></div>
-        <div class="pct-badge" id="pctBadge"></div>
-        <div class="note" id="snapNote"></div>
+      <div class="instrument-strip">
+        <div>
+          <a class="back" href="#/">‹ 返回指数列表</a>
+          <div class="instrument-title"><strong>${name}</strong><span>${code} · ${secid}</span></div>
+        </div>
+        <div class="market-quote">
+          <strong class="${cls(quote && quote.pct)}">${fmt(quote && quote.price)}</strong>
+          <span class="${cls(quote && quote.pct)}">${quote ? fmtPct(quote.pct) + "  " + (quote.chg >= 0 ? "+" : "") + fmt(quote.chg) : "行情快照暂不可用"}</span>
+        </div>
       </div>
-    </div>
+
+      <div class="analysis-card" id="statsView">
+        <aside class="stats-pane">
+          <div class="pane-title" id="statsTitle">指数点位</div>
+          <div class="stats" id="stats"></div>
+        </aside>
+        <div class="chart-pane">
+          <div class="chart-heading">
+            <div><strong id="chartTitle">指数点位</strong><span id="coverageBadge"></span></div>
+            <span class="source-note" id="sourceNote"></span>
+          </div>
+          <div id="chart"></div>
+          <div class="pct-badge" id="pctBadge"></div>
+          <div class="note" id="snapNote"></div>
+        </div>
+      </div>
+      <div class="table-card" id="tableView" hidden>
+        <div class="table-heading"><strong id="tableTitle">明细数据</strong><span id="tableCount"></span></div>
+        <div class="table-scroll"><table><thead><tr><th>日期</th><th id="metricColumn">指标值</th><th>指数点位</th><th>相对前值</th></tr></thead><tbody id="detailRows"></tbody></table></div>
+      </div>
+    </section>
   `;
 
-  // 范围切换
-  document.getElementById("rangeTabs").addEventListener("click", (e) => {
-    const t = e.target.closest("[data-range]");
-    if (!t) return;
-    curRange = t.dataset.range;
-    document.querySelectorAll("#rangeTabs .tab").forEach((x) => x.classList.toggle("active", x.dataset.range === curRange));
-    drawDetail(secid, quote);
-  });
-
-  drawDetail(secid, quote);
-  window.addEventListener("resize", () => chart && chart.resize());
-
-  // 异步加载估值数据，若有则补上 PE / PB 标签
-  const val = await loadValuation(code);
+  bindDetailControls(secid, quote);
   buildMetricTabs(secid, quote, val);
+  drawDetail(secid, quote);
+  window.onresize = () => chart && chart.resize();
 }
 
-function hasSeries(arr) { return Array.isArray(arr) && arr.some((x) => x != null && isFinite(x)); }
+function bindDetailControls(secid, quote) {
+  const redraw = () => drawDetail(secid, quote);
+  document.getElementById("rangeTabs").onclick = (event) => {
+    const target = event.target.closest("[data-range]");
+    if (!target) return;
+    detailState.range = target.dataset.range;
+    document.querySelectorAll("#rangeTabs .segment").forEach((item) => item.classList.toggle("active", item.dataset.range === detailState.range));
+    document.getElementById("customRange").hidden = detailState.range !== "CUSTOM";
+    redraw();
+  };
+  document.getElementById("viewTabs").onclick = (event) => {
+    const target = event.target.closest("[data-view]");
+    if (!target) return;
+    detailState.view = target.dataset.view;
+    document.querySelectorAll("#viewTabs .segment").forEach((item) => item.classList.toggle("active", item.dataset.view === detailState.view));
+    document.getElementById("statsView").hidden = detailState.view !== "stats";
+    document.getElementById("tableView").hidden = detailState.view !== "table";
+    if (detailState.view === "stats") requestAnimationFrame(() => chart && chart.resize());
+  };
+  document.getElementById("periodSelect").onchange = (event) => { detailState.period = event.target.value; redraw(); };
+  document.getElementById("maSelect").onchange = (event) => { detailState.ma = Number(event.target.value); redraw(); };
+  document.getElementById("quantileToggle").onchange = (event) => { detailState.showQuantiles = event.target.checked; redraw(); };
+  document.getElementById("stdToggle").onchange = (event) => { detailState.showStd = event.target.checked; redraw(); };
+  document.getElementById("customStart").onchange = (event) => { detailState.customStart = event.target.value; redraw(); };
+  document.getElementById("customEnd").onchange = (event) => { detailState.customEnd = event.target.value; redraw(); };
+}
 
 function buildMetricTabs(secid, quote, val) {
   const box = document.getElementById("metricTabs");
   if (!box) return;
-  const tabs = [{ m: "close", label: "点位分位" }];
-  if (val && hasSeries(val.pe)) tabs.push({ m: "pe", label: "市盈率" });
-  if (val && hasSeries(val.pb)) tabs.push({ m: "pb", label: "市净率" });
-  box.innerHTML = tabs.map((t) => `<div class="tab ${t.m === curMetric ? "active" : ""}" data-metric="${t.m}">${t.label}</div>`).join("");
-  box.onclick = (e) => {
-    const t = e.target.closest("[data-metric]");
-    if (!t) return;
-    curMetric = t.dataset.metric;
-    box.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.metric === curMetric));
+  // 四个指标始终展示；当前没有可用数据的置灰（disabled），不隐藏。
+  const avail = {
+    close: !!pointSeries(secid, quote),
+    pe: !!(val && Core.hasSeries(val.pe)),
+    pb: !!(val && Core.hasSeries(val.pb)),
+    dy: !!(val && Core.hasSeries(val.dy)),
+  };
+  box.innerHTML = ["close", "pe", "pb", "dy"].map((m) => {
+    const on = avail[m];
+    const active = on && m === detailState.metric ? " active" : "";
+    return `<button class="segment${active}" data-metric="${m}"${on ? "" : ' disabled title="暂无数据"'}>${METRICS[m].short}</button>`;
+  }).join("");
+  box.onclick = (event) => {
+    const target = event.target.closest("[data-metric]");
+    if (!target || target.disabled) return;
+    detailState.metric = target.dataset.metric;
+    box.querySelectorAll(".segment").forEach((item) => item.classList.toggle("active", item.dataset.metric === detailState.metric));
     drawDetail(secid, quote);
   };
 }
 
-function sliceByRange(dates, values) {
-  const range = RANGES.find((r) => r.k === curRange);
-  const cutoff = Date.now() - range.days * 86400000;
-  const pairs = dates.map((d, i) => [d, values[i]]).filter((p) => p[1] != null && isFinite(p[1]));
-  const inRange = pairs.filter((p) => new Date(p[0]).getTime() >= cutoff);
-  const use = inRange.length > 5 ? inRange : pairs;
-  return { dates: use.map((p) => p[0]), values: use.map((p) => p[1]) };
+function seriesOptions() {
+  return {
+    range: detailState.range,
+    customStart: detailState.customStart,
+    customEnd: detailState.customEnd,
+  };
+}
+
+// 历史点位序列：优先用静态 close（CI 多源兜底），否则回退浏览器实时 kline。
+function pointSeries(secid, quote) {
+  const val = valDataCache[secid_to_code(secid, quote)];
+  if (val && Core.hasSeries(val.close)) return { dates: val.dates, values: val.close };
+  const k = klineCache[secid];
+  if (k && k.rows.length) return { dates: k.rows.map((row) => row.date), values: k.rows.map((row) => row.close) };
+  return null;
+}
+
+function getMetricSeries(secid, quote) {
+  if (detailState.metric === "close") return pointSeries(secid, quote);
+  const val = valDataCache[secid_to_code(secid, quote)];
+  if (!val || !Core.hasSeries(val[detailState.metric])) return null;
+  return { dates: val.dates, values: val[detailState.metric] };
+}
+
+function prepareSeries(dates, values) {
+  const sliced = Core.sliceByRange(dates, values, seriesOptions());
+  return Core.resampleSeries(sliced.dates, sliced.values, detailState.period);
+}
+
+function firstAvailableMetric(secid, quote) {
+  if (pointSeries(secid, quote)) return "close";
+  const val = valDataCache[secid_to_code(secid, quote)];
+  if (val && Core.hasSeries(val.pe)) return "pe";
+  if (val && Core.hasSeries(val.pb)) return "pb";
+  if (val && Core.hasSeries(val.dy)) return "dy";
+  return "close";
 }
 
 function drawDetail(secid, quote) {
-  let series;
-  if (curMetric === "close") {
-    const kdata = klineCache[secid];
-    series = sliceByRange(kdata.rows.map((r) => r.date), kdata.rows.map((r) => r.close));
-  } else {
-    const val = valDataCache[secid_to_code(secid, quote)];
-    if (!val || !hasSeries(val[curMetric])) { curMetric = "close"; return drawDetail(secid, quote); }
-    series = sliceByRange(val.dates, val[curMetric]);
+  const raw = getMetricSeries(secid, quote);
+  if (!raw) {
+    const fallback = firstAvailableMetric(secid, quote);
+    if (fallback === detailState.metric) return; // 无可用序列，避免递归
+    detailState.metric = fallback;
+    return drawDetail(secid, quote);
   }
-  const st = analyze(series.values);
-  const label = METRIC_LABEL[curMetric];
+  const series = prepareSeries(raw.dates, raw.values);
+  const stats = Core.analyze(series.values);
+  const metric = METRICS[detailState.metric];
+  const point = pointSeries(secid, quote);
+  const pointValues = detailState.metric === "close"
+    ? series.values
+    : (point ? Core.alignPrevious(series.dates, point.dates, point.values) : series.dates.map(() => null));
+  const val = valDataCache[secid_to_code(secid, quote)];
+  const source = val && val.sources && val.sources[detailState.metric];
 
-  renderStats(st, quote, curMetric);
-  renderPctBadge(st);
-  renderSnapNote(quote, series.values.length, curMetric);
-  renderChart(series.dates, series.values, st, label);
+  renderStats(stats, metric);
+  renderPctBadge(stats, metric);
+  renderCoverage(series, metric, source);
+  renderDetailTable(series, pointValues, metric);
+  renderChart(series, pointValues, stats, metric);
 }
 
 // 估值缓存以 code 为键，这里从 secid/quote 推出 code
@@ -332,86 +417,125 @@ function secid_to_code(secid, quote) {
   return secid.split(".")[1];
 }
 
-function renderStats(st, quote, metric) {
-  if (!st) return;
+function renderStats(stats, metric) {
   const box = document.getElementById("stats");
-  const curLabel = metric === "close" ? "当前点位" : metric === "pe" ? "当前 PE" : "当前 PB";
-  // 仅在“点位分位”视图下，额外展示当前 PE/PB 快照
-  const peLine = metric === "close" && quote && quote.pe != null ? `<div class="row"><span class="k">市盈率 PE(TTM)</span><span class="v">${fmt(quote.pe)}</span></div>` : "";
-  const pbLine = metric === "close" && quote && quote.pb != null ? `<div class="row"><span class="k">市净率 PB</span><span class="v">${fmt(quote.pb)}</span></div>` : "";
+  document.getElementById("statsTitle").textContent = metric.label;
+  if (!stats) {
+    box.innerHTML = `<div class="empty-state">所选区间没有可用数据</div>`;
+    return;
+  }
+  const value = (number) => fmt(number) + (metric.unit || "");
+  const bands = Core.semanticBands(stats, metric.higherIsBetter);
   box.innerHTML = `
-    <div class="row hl"><span class="k">${curLabel}</span><span class="v">${fmt(st.current)}</span></div>
-    <div class="row hl"><span class="k">历史分位</span><span class="v">${st.percentile.toFixed(2)}%</span></div>
-    <div class="row"><span class="k"><span class="dot danger"></span>危险值 (70%)</span><span class="v">${fmt(st.danger)}</span></div>
-    <div class="row"><span class="k"><span class="dot median"></span>中位值 (50%)</span><span class="v">${fmt(st.median)}</span></div>
-    <div class="row"><span class="k"><span class="dot chance"></span>机会值 (30%)</span><span class="v">${fmt(st.chance)}</span></div>
-    <div class="row"><span class="k">最大值</span><span class="v">${fmt(st.max)}</span></div>
-    <div class="row"><span class="k">平均值</span><span class="v">${fmt(st.mean)}</span></div>
-    <div class="row"><span class="k">最小值</span><span class="v">${fmt(st.min)}</span></div>
-    <div class="row"><span class="k">标准差</span><span class="v">${fmt(st.std)}</span></div>
-    <div class="row"><span class="k">z 分数</span><span class="v">${fmt(st.z)}</span></div>
-    ${peLine}${pbLine}
+    <div class="row primary"><span class="k">${metric.current}</span><span class="v">${value(stats.current)}</span></div>
+    <div class="row primary"><span class="k">历史分位</span><span class="v">${stats.percentile.toFixed(2)}%</span></div>
+    <div class="row"><span class="k"><span class="line-key danger"></span>危险值 (${metric.higherIsBetter ? "20" : "80"}%)</span><span class="v">${value(bands.danger)}</span></div>
+    <div class="row"><span class="k"><span class="line-key median"></span>中位数 (50%)</span><span class="v">${value(stats.median)}</span></div>
+    <div class="row"><span class="k"><span class="line-key chance"></span>机会值 (${metric.higherIsBetter ? "80" : "20"}%)</span><span class="v">${value(bands.chance)}</span></div>
+    <div class="row divider"><span class="k">最大值</span><span class="v">${value(stats.max)}</span></div>
+    <div class="row"><span class="k">平均值</span><span class="v">${value(stats.mean)}</span></div>
+    <div class="row"><span class="k">最小值</span><span class="v">${value(stats.min)}</span></div>
+    <div class="row"><span class="k">标准差 (+1)</span><span class="v">${value(stats.stdUpper)}</span></div>
+    <div class="row"><span class="k">标准差 (-1)</span><span class="v">${value(stats.stdLower)}</span></div>
+    <div class="row"><span class="k">标准差</span><span class="v">${value(stats.std)}</span></div>
+    <div class="row"><span class="k">z 分数</span><span class="v">${fmt(stats.z)}</span></div>
   `;
 }
 
-function renderPctBadge(st) {
-  if (!st) return;
-  const p = Math.max(0, Math.min(100, st.percentile));
+function renderPctBadge(stats, metric) {
+  const box = document.getElementById("pctBadge");
+  if (!stats) { box.innerHTML = ""; return; }
+  const p = Math.max(0, Math.min(100, stats.percentile));
   let label = "适中", color = "var(--median)";
-  if (p >= 70) { label = "偏高估"; color = "var(--danger)"; }
-  else if (p <= 30) { label = "偏低估"; color = "var(--chance)"; }
-  document.getElementById("pctBadge").innerHTML =
+  if (metric.higherIsBetter) {
+    if (p >= 80) { label = "高股息"; color = "var(--chance)"; }
+    else if (p <= 20) { label = "低股息"; color = "var(--danger)"; }
+  } else {
+    if (p >= 80) { label = "偏高估"; color = "var(--danger)"; }
+    else if (p <= 20) { label = "偏低估"; color = "var(--chance)"; }
+  }
+  const gradient = metric.higherIsBetter
+    ? "linear-gradient(90deg,var(--danger),var(--median),var(--chance))"
+    : "linear-gradient(90deg,var(--chance),var(--median),var(--danger))";
+  box.innerHTML =
     `<span>当前分位 <b style="color:${color}">${p.toFixed(1)}% · ${label}</b></span>
-     <span class="bar"><i style="left:${p}%"></i></span>`;
+     <span class="bar" style="background:${gradient}"><i style="left:${p}%"></i></span>`;
 }
 
-function renderSnapNote(quote, n, metric) {
-  const parts = [`样本 ${n} 个交易日`];
-  const what = metric === "close" ? "指数点位" : metric === "pe" ? "市盈率 PE" : "市净率 PB";
-  if (metric === "close" && quote && quote.pe != null) parts.push(`PE ${fmt(quote.pe)}`);
-  if (metric === "close" && quote && quote.pb != null) parts.push(`PB ${fmt(quote.pb)}`);
-  parts.push(`分位分析基于所选区间的${what}序列`);
-  document.getElementById("snapNote").textContent = parts.join(" · ");
+function renderCoverage(series, metric, source) {
+  const first = series.dates[0];
+  const last = series.dates[series.dates.length - 1];
+  document.getElementById("chartTitle").textContent = metric.label;
+  document.getElementById("coverageBadge").textContent = first ? `${first} 至 ${last}` : "无数据";
+  document.getElementById("sourceNote").textContent = source ? `来源 ${source}` : "来源 东方财富";
+  document.getElementById("snapNote").textContent = first
+    ? `样本 ${series.values.length} 条 · 实际覆盖 ${first} 至 ${last} · 分位统计仅基于当前筛选后的有效序列`
+    : "所选区间没有有效样本";
 }
 
-function renderChart(dates, values, st, label) {
+function renderDetailTable(series, pointValues, metric) {
+  document.getElementById("tableTitle").textContent = `${metric.label}明细`;
+  document.getElementById("tableCount").textContent = `${series.values.length} 条`;
+  document.getElementById("metricColumn").textContent = metric.label;
+  const rows = series.dates.map((date, index) => {
+    const current = series.values[index];
+    const previous = index ? series.values[index - 1] : null;
+    const change = previous == null || previous === 0 ? null : ((current - previous) / Math.abs(previous)) * 100;
+    return { date, current, point: pointValues[index], change };
+  }).reverse();
+  document.getElementById("detailRows").innerHTML = rows.map((row) => `
+    <tr><td>${row.date}</td><td>${fmt(row.current)}${metric.unit || ""}</td><td>${fmt(row.point)}</td><td class="${cls(row.change)}">${row.change == null ? "—" : fmtPct(row.change)}</td></tr>
+  `).join("");
+}
+
+function renderChart(series, pointValues, stats, metric) {
   const el = document.getElementById("chart");
   if (chart) chart.dispose();
   chart = echarts.init(el);
-  const line = (val, color, name) => ({
-    name, yAxis: val, lineStyle: { color, type: "dashed", width: 1.5 },
-    label: { formatter: name + " " + fmt(val), color, position: "insideEndTop", fontSize: 11 },
+  // 行情接口不可用时 pointValues 全为空，不再叠加「指数点位」副轴
+  const showPoint = detailState.metric !== "close" && pointValues.some((v) => v != null && Number.isFinite(v));
+  const mark = (value, color, name) => ({
+    name, yAxis: value, lineStyle: { color, type: "dashed", width: 1.5 },
+    label: { formatter: `${name} ${fmt(value)}`, color, position: "insideEndTop", fontSize: 11 },
   });
+  const marks = [];
+  const bands = Core.semanticBands(stats, metric.higherIsBetter);
+  if (bands && detailState.showQuantiles) marks.push(mark(bands.danger, "#c63f36", "危险"), mark(stats.median, "#7b8794", "中位"), mark(bands.chance, "#2f9b62", "机会"));
+  if (stats && detailState.showStd) marks.push(mark(stats.stdUpper, "#8b5cf6", "+1σ"), mark(stats.stdLower, "#8b5cf6", "-1σ"));
+  const maValues = detailState.ma ? Core.movingAverage(series.values, detailState.ma) : null;
+  const chartSeries = [{
+    name: metric.label, type: "line", data: series.values, showSymbol: false, connectNulls: true,
+    lineStyle: { color: "#4fb2c7", width: 2 },
+    areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+      { offset: 0, color: "rgba(79,178,199,.38)" }, { offset: 1, color: "rgba(79,178,199,.05)" },
+    ]) },
+    markLine: marks.length ? { symbol: "none", silent: true, data: marks } : undefined,
+  }];
+  if (maValues) chartSeries.push({ name: `${metric.short} MA${detailState.ma}`, type: "line", data: maValues, showSymbol: false, connectNulls: true, lineStyle: { color: "#8b5cf6", width: 1.6 } });
+  if (showPoint) chartSeries.push({ name: "指数点位", type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: "#326f9f", width: 1.8 } });
+
   chart.setOption({
-    grid: { left: 58, right: 18, top: 24, bottom: 60 },
+    animation: false,
+    grid: { left: 64, right: showPoint ? 72 : 28, top: 40, bottom: 72 },
+    legend: { bottom: 8, textStyle: { color: "#586473" } },
     tooltip: {
       trigger: "axis",
-      formatter: (ps) => `${ps[0].axisValue}<br/>${label} <b>${fmt(ps[0].data)}</b>`,
+      formatter: (items) => `${items[0].axisValue}<br>${items.map((item) => `${item.marker}${item.seriesName} <b>${fmt(item.data)}${item.seriesName === metric.label ? metric.unit || "" : ""}</b>`).join("<br>")}`,
     },
     xAxis: {
-      type: "category", data: dates, boundaryGap: false,
-      axisLine: { lineStyle: { color: "#d4ddec" } },
+      type: "category", data: series.dates, boundaryGap: false,
+      axisLine: { lineStyle: { color: "#cfd7df" } },
       axisLabel: { color: "#909aa8", fontSize: 11 },
     },
-    yAxis: {
-      type: "value", scale: true,
-      splitLine: { lineStyle: { color: "#eef2f7" } },
-      axisLabel: { color: "#909aa8", fontSize: 11 },
-    },
+    yAxis: [
+      { type: "value", scale: true, name: metric.short, splitLine: { lineStyle: { color: "#e8edf1" } }, axisLabel: { color: "#687482", fontSize: 11 } },
+      { type: "value", scale: true, name: "指数点位", show: showPoint, splitLine: { show: false }, axisLabel: { color: "#687482", fontSize: 11 } },
+    ],
     dataZoom: [
       { type: "inside", start: 0, end: 100 },
-      { type: "slider", height: 18, bottom: 22, borderColor: "#e8ecf2", fillerColor: "rgba(43,125,233,.12)" },
+      { type: "slider", height: 18, bottom: 38, borderColor: "#dfe5ea", fillerColor: "rgba(79,178,199,.18)", backgroundColor: "#f4f7f8" },
     ],
-    series: [{
-      name: label, type: "line", data: values, showSymbol: false, smooth: false,
-      lineStyle: { color: "#2b7de9", width: 1.6 },
-      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-        { offset: 0, color: "rgba(43,125,233,.18)" }, { offset: 1, color: "rgba(43,125,233,0)" }]) },
-      markLine: st ? {
-        symbol: "none", silent: true,
-        data: [line(st.danger, "#e0524a", "危险"), line(st.median, "#f0a93b", "中位"), line(st.chance, "#2bab6b", "机会")],
-      } : undefined,
-    }],
+    series: chartSeries,
   });
 }
 

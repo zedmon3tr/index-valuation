@@ -4,11 +4,11 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>指数估值 · 行情分析</title>
-<meta name="description" content="搜索股票指数，查看实时行情与 PE/PB 估值分位分析" />
+<meta name="description" content="搜索股票指数，查看实时行情与点位、PE、PB、股息率历史分位分析" />
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
 <link rel="preconnect" href="https://push2.eastmoney.com" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b7de9'/%3E%3Ctext x='16' y='22' font-size='18' font-family='sans-serif' font-weight='700' fill='white' text-anchor='middle'%3E指%3C/text%3E%3C/svg%3E" />
-<link rel="stylesheet" href="./styles.css" />
+<link rel="stylesheet" href="./styles.css?v=20260614-7" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -29,10 +29,11 @@
 
   <footer class="footer">
     <div class="wrap">
-      数据来源：东方财富（实时行情/点位）、乐咕乐股 legulegu（历史 PE/PB 估值）。本页仅供研究参考，不构成投资建议。
+      数据来源：东方财富（实时行情/点位）、乐咕乐股与中证指数（历史 PE/PB/股息率）。本页仅供研究参考，不构成投资建议。
     </div>
   </footer>
 
-  <script src="./app.js"></script>
+  <script src="./valuation-core.js?v=20260614-7"></script>
+  <script src="./app.js?v=20260614-7"></script>
 </body>
 </html>

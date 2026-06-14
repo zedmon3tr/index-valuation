@@ -3,3 +3,9 @@
 
 # Reference / design mockups (not part of the site)
 0.png
+qa-*.png
+参考*.png
+
+# Python
+__pycache__/
+*.pyc
