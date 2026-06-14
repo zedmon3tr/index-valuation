@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-抓取主流宽基指数的历史 PE / PB 估值序列，生成前端用的 data/<code>.json。
+抓取主流指数的历史 PE / PB 估值序列，生成前端用的 data/<code>.json。
 
-数据源：akshare 的乐咕乐股（legulegu）接口
-  - 市盈率：ak.stock_index_pe_lg(symbol=<指数中文名>)   取「滚动市盈率」(TTM)
-  - 市净率：ak.stock_index_pb_lg(symbol=<指数中文名>)   取「市净率」
-两者均提供 2005 年至今的完整日频历史，适合做长周期分位分析。
+数据源：乐咕乐股（legulegu）指数估值接口（akshare 暴露的 stock_index_pe_lg
+只写死了 12 个宽基；这里直接调它底层的同一组 API，把 indexCode 参数化，从而
+覆盖白酒/医疗/军工等主题指数与科创50等更多指数）：
+  - 市盈率：https://legulegu.com/api/stockdata/index-basic-pe   取 ttmPe（滚动TTM）
+  - 市净率：https://legulegu.com/api/stockdata/index-basic-pb   取 pb
+token 与 cookie 复用 akshare 内部实现（hash_code / get_cookie_csrf），故 CI 中
+仍 `pip install akshare` 即可（py_mini_racer 是其依赖）。
 
-注意：乐咕仅支持下方 MAP 中列出的宽基指数。主题指数（白酒/医疗/军工等）
-与港美股，akshare 现有免费接口没有历史估值数据，故不在此生成；前端对
-没有 data/<code>.json 的指数会自动降级为「仅点位分位」，不显示 PE/PB。
+交易所后缀（.SH/.SZ/.CSI）因指数而异，脚本会自动逐个尝试，命中即用；乐咕没有
+估值数据的指数（如上证指数、创业板指、中证全指）自动跳过，前端对缺失指数会
+降级为仅点位分位。
 
 设计原则：逐个指数、逐个指标 try/except，单点失败不影响整体；详细打印日志。
 
@@ -23,52 +26,56 @@ import os
 import sys
 import time
 import traceback
+from datetime import datetime
 
 try:
-    import akshare as ak
+    import requests
+    import py_mini_racer
+    from akshare.stock_feature.stock_a_pe_and_pb import hash_code
+    from akshare.stock_feature.stock_a_indicator import get_cookie_csrf
 except Exception as e:  # pragma: no cover
-    print("无法导入 akshare，请先 `pip install akshare`：", e)
+    print("依赖缺失，请先 `pip install akshare`：", e)
     sys.exit(1)
 
-# 仓库根目录下的 data/ 目录
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "data")
 os.makedirs(OUT, exist_ok=True)
 
-# 乐咕指数中文名  ->  前端使用的指数代码（即 JSON 文件名）。
-# 名称必须与乐咕一致（其支持集：上证50/沪深300/上证380/创业板50/中证500/
-# 上证180/深证红利/深证100/中证1000/上证红利/中证100/中证800）；代码须与前端
-# 从东方财富取到的指数代码一致，否则该 JSON 不会被前端命中（无害，仅不显示）。
-MAP = {
-    "沪深300": "000300",
-    "上证50": "000016",
-    "上证180": "000010",
-    "上证380": "000009",
-    "中证100": "000903",
-    "中证500": "000905",
-    "中证800": "000906",
-    "中证1000": "000852",
-    "深证100": "399330",
-    "深证红利": "399324",
-    "上证红利": "000015",
-    "创业板50": "399673",
+PE_URL = "https://legulegu.com/api/stockdata/index-basic-pe"
+PB_URL = "https://legulegu.com/api/stockdata/index-basic-pb"
+SUFFIXES = (".SH", ".SZ", ".CSI")
+
+# 前端使用的指数代码（JSON 文件名）-> 指数中文名。代码须与前端从东方财富取到的
+# 一致；交易所后缀由脚本自动探测。乐咕无数据者自动跳过。
+INDEXES = {
+    # 宽基
+    "000300": "沪深300",
+    "000016": "上证50",
+    "000905": "中证500",
+    "000852": "中证1000",
+    "000688": "科创50",
+    "399330": "深证100",
+    "000010": "上证180",
+    "000009": "上证380",
+    "000903": "中证100",
+    "000906": "中证800",
+    # 红利
+    "000922": "中证红利",
+    "000015": "上证红利",
+    "399324": "深证红利",
+    # 主题
+    "399997": "中证白酒",
+    "399989": "中证医疗",
+    "399967": "中证军工",
+    "000932": "中证消费",
+    "399673": "创业板50",
 }
 
-# 取值列：PE 用滚动(TTM)市盈率，PB 用市净率。
-PE_COLS = ("滚动市盈率", "市盈率")          # 优先「滚动市盈率」，兜底首个含“市盈率”的列
-PB_COLS = ("市净率",)
-
-
-def _pick_col(df, prefer):
-    """从 df 中挑出取值列名：优先 prefer 中的精确列，否则取首个包含关键字的列。"""
-    for c in prefer:
-        if c in df.columns:
-            return c
-    key = prefer[0][-3:]  # “市盈率” / “市净率”
-    for c in df.columns:
-        if key in str(c):
-            return c
-    return None
+# token 每日变化；cookie/csrf 用一个通用页面即可（实测对所有 indexCode 通用）。
+_js = py_mini_racer.MiniRacer()
+_js.eval(hash_code)
+TOKEN = _js.call("hex", datetime.now().date().isoformat()).lower()
+COOKIE = get_cookie_csrf(url="https://legulegu.com/stockdata/sz50-ttm-lyr")
 
 
 def _to_float(x):
@@ -79,60 +86,55 @@ def _to_float(x):
         return None
 
 
-def _series(df):
-    """从乐咕返回的 df 提取 (dates, values)。第一列恒为日期。"""
-    date_col = "日期" if "日期" in df.columns else df.columns[0]
-    return [str(x)[:10] for x in df[date_col].tolist()], df
+def _fetch(url, code, value_field):
+    """逐个后缀尝试，返回 (dates, values) 或 (None, None)。"""
+    for suf in SUFFIXES:
+        try:
+            r = requests.get(
+                url,
+                params={"token": TOKEN, "indexCode": code + suf},
+                timeout=25,
+                **COOKIE,
+            )
+            data = r.json().get("data")
+            if data:
+                dates = [str(row.get("date"))[:10] for row in data]
+                vals = [_to_float(row.get(value_field)) for row in data]
+                return dates, vals, suf
+        except Exception as e:
+            print(f"    ({code}{suf} 请求异常: {e})")
+        time.sleep(0.4)
+    return None, None, None
 
 
-def fetch_one(name):
+def fetch_one(code, name):
     """返回 {name, dates, pe, pb} 或 None。"""
     rec = {"name": name, "dates": [], "pe": [], "pb": []}
     got = False
 
-    # --- 市盈率 ---
-    try:
-        df = ak.stock_index_pe_lg(symbol=name)
-        if df is not None and len(df):
-            col = _pick_col(df, PE_COLS)
-            dates, _ = _series(df)
-            if col:
-                rec["dates"] = dates
-                rec["pe"] = [_to_float(x) for x in df[col].tolist()]
-                got = True
-                print(f"  · {name} / 市盈率({col}): {len(dates)} 条")
-            else:
-                print(f"  · {name} / 市盈率: 找不到取值列 {list(df.columns)}")
-        else:
-            print(f"  · {name} / 市盈率: 空数据")
-    except Exception as e:
-        print(f"  · {name} / 市盈率: 失败 -> {e}")
-    time.sleep(1)
+    dates, pe, suf = _fetch(PE_URL, code, "ttmPe")
+    if dates:
+        rec["dates"] = dates
+        rec["pe"] = pe
+        got = True
+        print(f"  · {name} / 市盈率(ttmPe@{suf}): {len(dates)} 条")
+    else:
+        print(f"  · {name} / 市盈率: 无数据")
+    time.sleep(0.4)
 
-    # --- 市净率 ---
-    try:
-        df = ak.stock_index_pb_lg(symbol=name)
-        if df is not None and len(df):
-            col = _pick_col(df, PB_COLS)
-            dates, _ = _series(df)
-            if col:
-                vals = [_to_float(x) for x in df[col].tolist()]
-                if rec["dates"]:
-                    # 与已有日期对齐（PE/PB 日期一般一致，仍按日期映射稳妥）
-                    m = dict(zip(dates, vals))
-                    rec["pb"] = [m.get(d) for d in rec["dates"]]
-                else:
-                    rec["dates"] = dates
-                    rec["pb"] = vals
-                got = True
-                print(f"  · {name} / 市净率({col}): {len(dates)} 条")
-            else:
-                print(f"  · {name} / 市净率: 找不到取值列 {list(df.columns)}")
+    bdates, pb, suf = _fetch(PB_URL, code, "pb")
+    if bdates:
+        if rec["dates"]:
+            m = dict(zip(bdates, pb))
+            rec["pb"] = [m.get(d) for d in rec["dates"]]  # 对齐到 PE 的日期
         else:
-            print(f"  · {name} / 市净率: 空数据")
-    except Exception as e:
-        print(f"  · {name} / 市净率: 失败 -> {e}")
-    time.sleep(1)
+            rec["dates"] = bdates
+            rec["pb"] = pb
+        got = True
+        print(f"  · {name} / 市净率(pb@{suf}): {len(bdates)} 条")
+    else:
+        print(f"  · {name} / 市净率: 无数据")
+    time.sleep(0.4)
 
     return rec if got else None
 
@@ -140,10 +142,10 @@ def fetch_one(name):
 def main():
     print("开始抓取指数估值数据（数据源：乐咕乐股）...")
     meta = []
-    for name, code in MAP.items():
+    for code, name in INDEXES.items():
         print(f"[{name} -> {code}]")
         try:
-            rec = fetch_one(name)
+            rec = fetch_one(code, name)
         except Exception:
             traceback.print_exc()
             rec = None
@@ -156,9 +158,7 @@ def main():
             json.dump(rec, f, ensure_ascii=False, separators=(",", ":"))
         meta.append({"code": code, "name": name})
         print(f"  已保存 {path}")
-        time.sleep(1)
 
-    # 索引文件：前端可用它知道哪些指数有估值数据
     with open(os.path.join(OUT, "_index.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
     print(f"完成，共生成 {len(meta)} 个指数的估值数据。")
