@@ -15,7 +15,7 @@
   { "secid": "0.399989", "code": "399989", "name": "中证医疗", "home": true },
   { "secid": "0.399967", "code": "399967", "name": "中证军工", "home": true },
   { "secid": "100.HSI", "code": "HSI", "name": "恒生指数", "home": true },
-  { "secid": "100.HSTECH", "code": "HSTECH", "name": "恒生科技", "home": true },
+  { "secid": "124.HSTECH", "code": "HSTECH", "name": "恒生科技", "home": true },
   { "secid": "100.NDX", "code": "NDX", "name": "纳斯达克100", "home": true },
   { "secid": "100.SPX", "code": "SPX", "name": "标普500", "home": true },
 
