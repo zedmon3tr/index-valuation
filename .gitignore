@@ -1,7 +1,8 @@
 # macOS
 .DS_Store
 
-# Reference / design mockups (not part of the site)
+# Reference / design mockups (本地参考图，不上传 GitHub)
+reference/
 0.png
 qa-*.png
 参考*.png
