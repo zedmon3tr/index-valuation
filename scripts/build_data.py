@@ -45,9 +45,10 @@ PE_URL = "https://legulegu.com/api/stockdata/index-basic-pe"
 PB_URL = "https://legulegu.com/api/stockdata/index-basic-pb"
 SUFFIXES = (".SH", ".SZ", ".CSI")
 
-# 指数清单的单一数据源：仓库根目录的 indexes.json（前端首页也读它）。
-# 这里据此决定抓取哪些指数——改首页清单即自动改抓取范围，无需动本脚本。
-# 仅抓 A 股（代码全为数字）；港美股（HSI/NDX 等）乐咕无估值数据，跳过。
+# 指数清单的单一数据源：仓库根目录的 indexes.json（前端也读它）。
+# 数据抓取覆盖表中【所有】A 股指数（代码全为数字），与 home 开关无关——
+# home 只决定是否上首页，但表里的指数都预生成估值数据，这样用户搜到非首页
+# 指数时也能看 PE/PB。港美股（HSI/NDX 等）乐咕无估值数据，跳过。
 # 交易所后缀(.SH/.SZ/.CSI)由脚本自动探测；乐咕无数据者自动跳过。
 def load_indexes():
     with open(os.path.join(ROOT, "indexes.json"), encoding="utf-8") as f:

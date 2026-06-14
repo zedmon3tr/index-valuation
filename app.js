@@ -160,17 +160,19 @@ window.addEventListener("hashchange", router);
 
 /* ---------- 7. 首页 ---------- */
 async function renderHome() {
+  // 首页只展示主表中 home 开关打开的指数（开关在 indexes.json 里逐条配置）
+  const homeList = POPULAR.filter((p) => p.home);
   view.innerHTML = `
     <section class="hero">
       <h1>指数估值 · 行情分析</h1>
       <p>搜索任意指数，查看实时点位、涨跌，以及历史点位 / PE / PB 分位分析。</p>
     </section>
     <div class="section-title">主流指数 <small>点击查看分位分析</small></div>
-    <div class="grid" id="grid">${POPULAR.map(cardSkeleton).join("")}</div>
+    <div class="grid" id="grid">${homeList.map(cardSkeleton).join("")}</div>
   `;
   try {
-    const q = await EM.batchQuote(POPULAR.map((p) => p.secid));
-    POPULAR.forEach((p) => {
+    const q = await EM.batchQuote(homeList.map((p) => p.secid));
+    homeList.forEach((p) => {
       const el = document.getElementById("c-" + p.secid.replace(".", "_"));
       const d = q[p.secid];
       if (el) el.innerHTML = cardBody(p, d);
@@ -439,15 +441,16 @@ window.goto = (secid) => { suggestBox.hidden = true; searchInput.value = ""; loc
 searchInput.addEventListener("input", () => {
   const kw = searchInput.value.trim();
   if (!kw) { suggestBox.hidden = true; return; }
+  // 先查本地主表（indexes.json）；命中就直接用，不打外部接口
   const local = localSearch(kw);
-  renderSuggest(local);
+  if (local.length) { clearTimeout(searchTimer); renderSuggest(local); return; }
+  // 表里没有 → 防抖后回退到外部接口（东方财富全网搜索）
+  suggestBox.innerHTML = `<div class="suggest-empty">搜索中…</div>`;
+  suggestBox.hidden = false;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
     const remote = await EM.suggest(kw);
-    const seen = new Set(local.map((x) => x.secid));
-    const merged = [...local];
-    remote.forEach((r) => { if (r.secid && !seen.has(r.secid)) { seen.add(r.secid); merged.push(r); } });
-    if (searchInput.value.trim() === kw) renderSuggest(merged.slice(0, 15));
+    if (searchInput.value.trim() === kw) renderSuggest(remote.slice(0, 15));
   }, 280);
 });
 searchInput.addEventListener("keydown", (e) => {
