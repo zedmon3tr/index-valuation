@@ -4,28 +4,19 @@
  * 估值 PE/PB：data/<code>.json（由 GitHub Actions 跑 akshare 每日预生成）
  * ========================================================================= */
 
-/* ---------- 1. 预置主流指数（本地即时搜索，零网络依赖） ---------- */
-const POPULAR = [
-  { secid: "1.000001", code: "000001", name: "上证指数" },
-  { secid: "0.399001", code: "399001", name: "深证成指" },
-  { secid: "0.399006", code: "399006", name: "创业板指" },
-  { secid: "1.000300", code: "000300", name: "沪深300" },
-  { secid: "1.000016", code: "000016", name: "上证50" },
-  { secid: "1.000905", code: "000905", name: "中证500" },
-  { secid: "1.000852", code: "000852", name: "中证1000" },
-  { secid: "1.000688", code: "000688", name: "科创50" },
-  { secid: "0.399330", code: "399330", name: "深证100" },
-  { secid: "1.000985", code: "000985", name: "中证全指" },
-  { secid: "1.000922", code: "000922", name: "中证红利" },
-  { secid: "1.000015", code: "000015", name: "上证红利" },
-  { secid: "0.399997", code: "399997", name: "中证白酒" },
-  { secid: "0.399989", code: "399989", name: "中证医疗" },
-  { secid: "0.399967", code: "399967", name: "中证军工" },
-  { secid: "100.HSI",  code: "HSI",    name: "恒生指数" },
-  { secid: "100.HSTECH", code: "HSTECH", name: "恒生科技" },
-  { secid: "100.NDX",  code: "NDX",    name: "纳斯达克100" },
-  { secid: "100.SPX",  code: "SPX",    name: "标普500" },
-];
+/* ---------- 1. 主流指数清单（单一数据源：indexes.json） ----------
+ * 首页卡片、本地搜索、以及数据脚本 scripts/build_data.py 都读这份清单。
+ * 想增删首页指数，只改 indexes.json 一处即可，前端与数据抓取自动同步。 */
+let POPULAR = [];
+async function loadIndexes() {
+  try {
+    const r = await fetch("./indexes.json", { cache: "no-cache" });
+    POPULAR = await r.json();
+  } catch (e) {
+    console.error("加载 indexes.json 失败：", e);
+    POPULAR = [];
+  }
+}
 
 /* ---------- 2. JSONP 工具 ---------- */
 function jsonp(url, cbParam = "cb", timeout = 12000) {
@@ -471,4 +462,4 @@ searchInput.addEventListener("keydown", (e) => {
 document.addEventListener("click", (e) => { if (!e.target.closest("#navSearch")) suggestBox.hidden = true; });
 
 /* ---------- 启动 ---------- */
-router();
+loadIndexes().then(router);

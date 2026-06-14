@@ -45,31 +45,22 @@ PE_URL = "https://legulegu.com/api/stockdata/index-basic-pe"
 PB_URL = "https://legulegu.com/api/stockdata/index-basic-pb"
 SUFFIXES = (".SH", ".SZ", ".CSI")
 
-# 前端使用的指数代码（JSON 文件名）-> 指数中文名。代码须与前端从东方财富取到的
-# 一致；交易所后缀由脚本自动探测。乐咕无数据者自动跳过。
-INDEXES = {
-    # 宽基
-    "000300": "沪深300",
-    "000016": "上证50",
-    "000905": "中证500",
-    "000852": "中证1000",
-    "000688": "科创50",
-    "399330": "深证100",
-    "000010": "上证180",
-    "000009": "上证380",
-    "000903": "中证100",
-    "000906": "中证800",
-    # 红利
-    "000922": "中证红利",
-    "000015": "上证红利",
-    "399324": "深证红利",
-    # 主题
-    "399997": "中证白酒",
-    "399989": "中证医疗",
-    "399967": "中证军工",
-    "000932": "中证消费",
-    "399673": "创业板50",
-}
+# 指数清单的单一数据源：仓库根目录的 indexes.json（前端首页也读它）。
+# 这里据此决定抓取哪些指数——改首页清单即自动改抓取范围，无需动本脚本。
+# 仅抓 A 股（代码全为数字）；港美股（HSI/NDX 等）乐咕无估值数据，跳过。
+# 交易所后缀(.SH/.SZ/.CSI)由脚本自动探测；乐咕无数据者自动跳过。
+def load_indexes():
+    with open(os.path.join(ROOT, "indexes.json"), encoding="utf-8") as f:
+        items = json.load(f)
+    out = {}
+    for it in items:
+        code = str(it.get("code", "")).strip()
+        if code.isdigit():  # 仅 A 股指数
+            out[code] = it.get("name", code)
+    return out
+
+
+INDEXES = load_indexes()
 
 # token 每日变化；cookie/csrf 用一个通用页面即可（实测对所有 indexCode 通用）。
 _js = py_mini_racer.MiniRacer()
@@ -158,6 +149,13 @@ def main():
             json.dump(rec, f, ensure_ascii=False, separators=(",", ":"))
         meta.append({"code": code, "name": name})
         print(f"  已保存 {path}")
+
+    # 清理：删掉已不在清单里的旧数据文件，保持 data/ 与 indexes.json 同步。
+    keep = set(INDEXES) | {"_index"}
+    for fn in os.listdir(OUT):
+        if fn.endswith(".json") and fn[:-5] not in keep:
+            os.remove(os.path.join(OUT, fn))
+            print(f"  清理过期文件 {fn}")
 
     with open(os.path.join(OUT, "_index.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
