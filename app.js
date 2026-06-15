@@ -136,13 +136,31 @@ window.addEventListener("hashchange", router);
 async function renderHome() {
   // 首页只展示主表中 home 开关打开的指数（开关在 indexes.json 里逐条配置）
   const homeList = POPULAR.filter((p) => p.home);
+  // 按市场分组渲染（顺序 A股 → 港股 → 美股；未标注 market 的归入"其他"）
+  const MARKET_ORDER = ["A股", "港股", "美股"];
+  const groups = new Map();
+  homeList.forEach((p) => {
+    const m = p.market || "其他";
+    if (!groups.has(m)) groups.set(m, []);
+    groups.get(m).push(p);
+  });
+  const markets = [
+    ...MARKET_ORDER.filter((m) => groups.has(m)),
+    ...[...groups.keys()].filter((m) => !MARKET_ORDER.includes(m)),
+  ];
+  const sections = markets
+    .map(
+      (m) =>
+        `<div class="section-title">${m}</div>
+    <div class="grid">${groups.get(m).map(cardSkeleton).join("")}</div>`
+    )
+    .join("");
   view.innerHTML = `
     <section class="hero">
       <h1>指数估值 · 行情分析</h1>
       <p>搜索任意指数，查看实时点位、涨跌，以及历史点位 / PE / PB / 股息率分位分析。</p>
     </section>
-    <div class="section-title">主流指数 <small>点击查看分位分析</small></div>
-    <div class="grid" id="grid">${homeList.map(cardSkeleton).join("")}</div>
+    ${sections}
   `;
   try {
     const q = await EM.batchQuote(homeList.map((p) => p.secid));
@@ -219,7 +237,8 @@ async function renderDetail(secid) {
     view.innerHTML = `<div class="error">未找到该指数的历史数据，且实时行情接口暂时不可用，请稍后重试。<br><a class="back" href="#/">返回首页</a></div>`;
     return;
   }
-  const defaultMetric = hasPoint ? "close" : Core.hasSeries(val.pe) ? "pe" : Core.hasSeries(val.pb) ? "pb" : "dy";
+  // 优先默认显示估值指标（点位会作为叠加线始终展示）；仅有点位数据的指数才默认点位。
+  const defaultMetric = (val && Core.hasSeries(val.pe)) ? "pe" : (val && Core.hasSeries(val.pb)) ? "pb" : (val && Core.hasSeries(val.dy)) ? "dy" : "close";
   Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "D", ma: 0, view: "stats", showQuantiles: true, showStd: false, customStart: "", customEnd: "" });
 
   view.innerHTML = `
@@ -232,11 +251,11 @@ async function renderDetail(secid) {
               ${RANGES.map((r) => `<button class="segment ${r.k === detailState.range ? "active" : ""}" data-range="${r.k}">${r.label}</button>`).join("")}
             </div>
           </div>
+          <label class="select-control"><span>周期</span><select id="periodSelect"><option value="D">日</option><option value="W">周</option><option value="M">月</option></select></label>
           <div class="control-group metric-control">
             <span class="control-label">估值指标</span>
-            <div class="segmented" id="metricTabs"><button class="segment active" data-metric="close">指数点位</button></div>
+            <div class="segmented" id="metricTabs"></div>
           </div>
-          <label class="select-control"><span>周期</span><select id="periodSelect"><option value="D">日</option><option value="W">周</option><option value="M">月</option></select></label>
         </div>
         <div class="control-row secondary-controls">
           <div class="segmented view-switch" id="viewTabs">
@@ -325,14 +344,15 @@ function bindDetailControls(secid, quote) {
 function buildMetricTabs(secid, quote, val) {
   const box = document.getElementById("metricTabs");
   if (!box) return;
-  // 四个指标始终展示；当前没有可用数据的置灰（disabled），不隐藏。
   const avail = {
     close: !!pointSeries(secid, quote),
     pe: !!(val && Core.hasSeries(val.pe)),
     pb: !!(val && Core.hasSeries(val.pb)),
     dy: !!(val && Core.hasSeries(val.dy)),
   };
-  box.innerHTML = ["close", "pe", "pb", "dy"].map((m) => {
+  // 「点位」永不作为估值指标 tab（点位始终作为叠加线展示）。估值指标固定展示
+  // PE/PB/股息率，暂无数据的置灰——缺失只是数据源临时问题，后续会补，不隐藏。
+  box.innerHTML = ["pe", "pb", "dy"].map((m) => {
     const on = avail[m];
     const active = on && m === detailState.metric ? " active" : "";
     return `<button class="segment${active}" data-metric="${m}"${on ? "" : ' disabled title="暂无数据"'}>${METRICS[m].short}</button>`;
@@ -376,11 +396,12 @@ function prepareSeries(dates, values) {
 }
 
 function firstAvailableMetric(secid, quote) {
-  if (pointSeries(secid, quote)) return "close";
+  // 优先估值指标，最后才回退点位（与默认 metric 一致）
   const val = valDataCache[secid_to_code(secid, quote)];
   if (val && Core.hasSeries(val.pe)) return "pe";
   if (val && Core.hasSeries(val.pb)) return "pb";
   if (val && Core.hasSeries(val.dy)) return "dy";
+  if (pointSeries(secid, quote)) return "close";
   return "close";
 }
 
@@ -503,16 +524,21 @@ function renderChart(series, pointValues, stats, metric) {
   if (bands && detailState.showQuantiles) marks.push(mark(bands.danger, "#c63f36", "危险"), mark(stats.median, "#7b8794", "中位"), mark(bands.chance, "#2f9b62", "机会"));
   if (stats && detailState.showStd) marks.push(mark(stats.stdUpper, "#8b5cf6", "+1σ"), mark(stats.stdLower, "#8b5cf6", "-1σ"));
   const maValues = detailState.ma ? Core.movingAverage(series.values, detailState.ma) : null;
-  const chartSeries = [{
+  const tealArea = { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+    { offset: 0, color: "rgba(79,178,199,.38)" }, { offset: 1, color: "rgba(79,178,199,.05)" },
+  ]) };
+  // 视觉层级：指数点位是"基准"（青色填充、占主视觉、区间内固定不变）；当前估值指标是
+  // "会变化的辅助线"（清晰细线叠加其上）。仅有点位的指数则点位本身即主体。
+  const metricSeries = {
     name: metric.label, type: "line", data: series.values, showSymbol: false, connectNulls: true,
-    lineStyle: { color: "#4fb2c7", width: 2 },
-    areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-      { offset: 0, color: "rgba(79,178,199,.38)" }, { offset: 1, color: "rgba(79,178,199,.05)" },
-    ]) },
+    lineStyle: { color: showPoint ? "#2f6190" : "#4fb2c7", width: 2 },
     markLine: marks.length ? { symbol: "none", silent: true, data: marks } : undefined,
-  }];
+  };
+  if (!showPoint) metricSeries.areaStyle = tealArea;
+  const chartSeries = [];
+  if (showPoint) chartSeries.push({ name: "指数点位", type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: "#4fb2c7", width: 2 }, areaStyle: tealArea });
+  chartSeries.push(metricSeries);
   if (maValues) chartSeries.push({ name: `${metric.short} MA${detailState.ma}`, type: "line", data: maValues, showSymbol: false, connectNulls: true, lineStyle: { color: "#8b5cf6", width: 1.6 } });
-  if (showPoint) chartSeries.push({ name: "指数点位", type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: "#326f9f", width: 1.8 } });
 
   chart.setOption({
     animation: false,
