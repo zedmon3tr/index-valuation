@@ -10,3 +10,6 @@ qa-*.png
 # Python
 __pycache__/
 *.pyc
+
+# 理杏仁 lixinger 私有 token（仅本地，绝不提交）——backfill_lixinger.py 读取
+scripts/.lixinger_token.json

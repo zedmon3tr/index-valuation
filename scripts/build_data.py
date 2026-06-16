@@ -56,6 +56,24 @@ PB_URL = "https://legulegu.com/api/stockdata/index-basic-pb"
 HS_DIVIDEND_URL = "https://legulegu.com/api/stockdata/hs"
 SUFFIXES = (".SH", ".SZ", ".CSI")
 
+# 理杏仁(lixinger)一次性回填的种子：data/seed/<code>.json（由 scripts/backfill_lixinger.py
+# 生成并提交进仓库）。种子是【长历史底】，按市场只含相应字段：A股仅 dy（升级中证 20 天为
+# 10 年），港美含 pe/pb/dy（填上免费源覆盖不到的估值缺口）。无需 token——纯读静态文件，
+# 所以每日 CI 照常能用。种子里有的字段会覆盖免费源对应字段（见 fetch_one 末尾）。
+SEED_DIR = os.path.join(OUT, "seed")
+
+
+def _load_seed(code):
+    path = os.path.join(SEED_DIR, f"{code}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"    (种子 {code} 读取失败: {e})")
+        return None
+
 # 指数清单的单一数据源：仓库根目录的 indexes.json（前端也读它）。
 # 数据抓取覆盖表中【所有】指数，与 home 开关无关——
 # home 只决定是否上首页，但表里的指数都预生成估值数据，这样用户搜到非首页
@@ -276,6 +294,8 @@ def fetch_one(code, name, secid=""):
     """返回日期对齐后的 {name, dates, close?, pe?, pb?, dy?} 或 None。"""
     series = {}
     sources = {}
+    seed = _load_seed(code)
+    seed_has_dy = bool(seed and any(v is not None for v in (seed.get("dy") or [])))
 
     # 历史点位：多源兜底，写进静态 JSON，前端不再硬依赖浏览器实时接口。
     pdates, pclose, psrc = _fetch_point_history(code, name, secid)
@@ -309,25 +329,48 @@ def fetch_one(code, name, secid=""):
             print(f"  · {name} / 市净率: 无数据")
         time.sleep(0.4)
 
-        ddates, dy = _fetch_csi_dividend(code)
-        if ddates:
-            series["dy"] = (ddates, dy)
-            sources["dy"] = "csindex:D/P2"
-            print(f"  · {name} / 股息率(中证 D/P2): {len(ddates)} 条")
+        if seed_has_dy:
+            # 已有 lixinger 10 年 dy 种子（下方统一覆盖），不必再抓中证 20 天。
+            print(f"  · {name} / 股息率: 用 lixinger 种子（跳过中证 20 天）")
         else:
-            print(f"  · {name} / 股息率: 无数据")
+            ddates, dy = _fetch_csi_dividend(code)
+            if ddates:
+                series["dy"] = (ddates, dy)
+                sources["dy"] = "csindex:D/P2"
+                print(f"  · {name} / 股息率(中证 D/P2): {len(ddates)} 条")
+            else:
+                print(f"  · {name} / 股息率: 无数据")
     elif code == "HSI":
-        hdates, hpe, hdy = _fetch_hsi_valuation()
-        if hdates and any(value is not None for value in hpe):
-            series["pe"] = (hdates, hpe)
-            sources["pe"] = "legulegu:HSI"
-            print(f"  · {name} / 市盈率(乐咕 HSI): {len(hdates)} 条")
-        if hdates and any(value is not None for value in hdy):
-            series["dy"] = (hdates, hdy)
-            sources["dy"] = "legulegu:dvRatio"
-            print(f"  · {name} / 股息率(乐咕 dvRatio): {len(hdates)} 条")
+        # 有 lixinger 种子(含 pe/dy)时跳过乐咕 HSI 请求——种子下方会整体覆盖，省一次日常依赖。
+        seed_has_val = bool(seed and (
+            any(v is not None for v in (seed.get("pe") or []))
+            or any(v is not None for v in (seed.get("dy") or []))
+        ))
+        if seed_has_val:
+            print(f"  · {name} / 估值: 用 lixinger 种子（跳过乐咕 HSI）")
         else:
-            print(f"  · {name} / 股息率: 无数据")
+            hdates, hpe, hdy = _fetch_hsi_valuation()
+            if hdates and any(value is not None for value in hpe):
+                series["pe"] = (hdates, hpe)
+                sources["pe"] = "legulegu:HSI"
+                print(f"  · {name} / 市盈率(乐咕 HSI): {len(hdates)} 条")
+            if hdates and any(value is not None for value in hdy):
+                series["dy"] = (hdates, hdy)
+                sources["dy"] = "legulegu:dvRatio"
+                print(f"  · {name} / 股息率(乐咕 dvRatio): {len(hdates)} 条")
+            else:
+                print(f"  · {name} / 股息率: 无数据")
+
+    # lixinger 种子覆盖：把种子里有的 pe/pb/dy 换成 10 年长历史。按市场天然各取所需——
+    # A股种子只含 dy（升级股息率），港美种子含 pe/pb/dy（连 HSTECH/SPX 这些免费源够不到
+    # 的也补上）。close（点位）仍来自上面的免费多源兜底，种子不含。
+    if seed and seed.get("dates"):
+        for field in ("pe", "pb", "dy"):
+            vals = seed.get(field)
+            if vals and any(v is not None for v in vals):
+                series[field] = (seed["dates"], vals)
+                sources[field] = "lixinger"
+                print(f"  · {name} / {field}(lixinger 种子): {sum(v is not None for v in vals)} 条")
 
     aligned = merge_series(series)
     if not aligned.get("dates"):
