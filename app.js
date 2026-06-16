@@ -224,7 +224,8 @@ const METRICS = {
   close: { label: "指数点位", short: "点位", current: "当前点位" },
   pe: { label: "市盈率 TTM", short: "市盈率", current: "当前 PE" },
   pb: { label: "市净率 LF", short: "市净率", current: "当前 PB" },
-  dy: { label: "股息率", short: "股息率", current: "当前股息率", unit: "%", higherIsBetter: true },
+  dy: { label: "股息率", short: "股息率", current: "当前股息率", unit: "%", higherIsBetter: true,
+        note: "股息率为理杏仁市值加权口径；红利类指数（如中证红利）可能略低于韭圈儿/Wind 的官方派息口径" },
 };
 const detailState = {
   range: "10Y",
@@ -513,8 +514,9 @@ function renderCoverage(series, metric, source) {
   document.getElementById("chartTitle").textContent = metric.label;
   document.getElementById("coverageBadge").textContent = first ? `${first} 至 ${last}` : "无数据";
   document.getElementById("sourceNote").textContent = source ? `来源 ${source}` : "来源 东方财富";
+  const note = metric.note ? ` · ${metric.note}` : "";
   document.getElementById("snapNote").textContent = first
-    ? `样本 ${series.values.length} 条 · 实际覆盖 ${first} 至 ${last} · 分位统计仅基于当前筛选后的有效序列`
+    ? `样本 ${series.values.length} 条 · 实际覆盖 ${first} 至 ${last} · 分位统计仅基于当前筛选后的有效序列${note}`
     : "所选区间没有有效样本";
 }
 
@@ -557,21 +559,28 @@ function renderChart(series, pointValues, stats, metric) {
   if (bands && detailState.showQuantiles) marks.push(mark(bands.danger, "#c63f36", "危险"), mark(stats.median, "#7b8794", "中位"), mark(bands.chance, "#2f9b62", "机会"));
   if (stats && detailState.showStd) marks.push(mark(stats.stdUpper, "#8b5cf6", "+1σ"), mark(stats.stdLower, "#8b5cf6", "-1σ"));
   const maValues = detailState.ma ? Core.movingAverage(series.values, detailState.ma) : null;
-  const tealArea = { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-    { offset: 0, color: "rgba(79,178,199,.38)" }, { offset: 1, color: "rgba(79,178,199,.05)" },
+  // 配色——统一「线条」与「图例/tooltip 圆点」：ECharts 折线的图例标记和 tooltip 圆点
+  // 取的是 itemStyle.color，只设 lineStyle.color 会让它们回退到默认调色板、与线对不上。
+  // 故每条线都把 lineStyle.color 与 itemStyle.color 设成同一颜色。
+  const POINT_COLOR = "#7fc8a0";   // 指数点位：浅绿色 + 色块填充
+  const METRIC_COLOR = "#2f6190";  // 当前选中的估值指标：深蓝色
+  const MA_COLOR = "#8b5cf6";
+  const greenArea = { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+    { offset: 0, color: "rgba(127,200,160,.42)" }, { offset: 1, color: "rgba(127,200,160,.05)" },
   ]) };
-  // 视觉层级：指数点位是"基准"（青色填充、占主视觉、区间内固定不变）；当前估值指标是
-  // "会变化的辅助线"（清晰细线叠加其上）。仅有点位的指数则点位本身即主体。
+  // 视觉层级：指数点位是"基准"（浅绿填充、占主视觉）；当前估值指标是"会变化的辅助线"
+  // （深蓝细线叠加其上）。仅有点位的指数则点位本身即主体（也用浅绿）。
+  const metricColor = showPoint ? METRIC_COLOR : POINT_COLOR;
   const metricSeries = {
     name: metric.label, type: "line", data: series.values, showSymbol: false, connectNulls: true,
-    lineStyle: { color: showPoint ? "#2f6190" : "#4fb2c7", width: 2 },
+    lineStyle: { color: metricColor, width: 2 }, itemStyle: { color: metricColor },
     markLine: marks.length ? { symbol: "none", silent: true, data: marks } : undefined,
   };
-  if (!showPoint) metricSeries.areaStyle = tealArea;
+  if (!showPoint) metricSeries.areaStyle = greenArea;
   const chartSeries = [];
-  if (showPoint) chartSeries.push({ name: "指数点位", type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: "#4fb2c7", width: 2 }, areaStyle: tealArea });
+  if (showPoint) chartSeries.push({ name: "指数点位", type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: POINT_COLOR, width: 1 }, itemStyle: { color: POINT_COLOR }, areaStyle: greenArea });
   chartSeries.push(metricSeries);
-  if (maValues) chartSeries.push({ name: `${metric.short} MA${detailState.ma}`, type: "line", data: maValues, showSymbol: false, connectNulls: true, lineStyle: { color: "#8b5cf6", width: 1.6 } });
+  if (maValues) chartSeries.push({ name: `${metric.short} MA${detailState.ma}`, type: "line", data: maValues, showSymbol: false, connectNulls: true, lineStyle: { color: MA_COLOR, width: 1.6 }, itemStyle: { color: MA_COLOR } });
 
   chart.setOption({
     animation: false,
