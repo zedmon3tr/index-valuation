@@ -92,9 +92,31 @@ def load_indexes():
 
 INDEXES = load_indexes()
 
+# 主源 funddb(韭圈儿)：PE/PB/股息率 10 年、覆盖中港美、口径对齐大众、无 token。非官方
+# 签名接口（见 scripts/jiucaishuo_client.py 与 docs 调研），失效时自动回退老源、不覆盖旧数据。
+# 启动时取一次 指数代码映射（我方 code → funddb gu_code，如 000300→000300.SH、HSI→HSI.HI）。
+try:
+    import jiucaishuo_client as jq
+    GU_CODE_MAP = jq.fetch_gu_code_map()
+    print(f"funddb 指数映射就绪：{len(GU_CODE_MAP)} 个")
+except Exception as e:  # pragma: no cover
+    print(f"funddb 映射获取失败，本次仅用兜底源（legulegu/中证/lixinger 种子）：{e}")
+    jq = None
+    GU_CODE_MAP = {}
+
 # token 每日变化；cookie/csrf 用一个通用页面即可（实测对所有 indexCode 通用）。
 TOKEN = md5(datetime.now().date().isoformat().encode()).hexdigest()
-COOKIE = get_cookie_csrf(url="https://legulegu.com/stockdata/sz50-ttm-lyr")
+
+# 乐咕 cookie/csrf 懒加载：legulegu 现在只是 funddb 缺字段时的兜底，没必要在 import 时就
+# 发网络请求（否则 legulegu 不可用会拖垮整个启动）。真正用到兜底时才取、并缓存复用。
+_COOKIE = None
+
+
+def _cookie():
+    global _COOKIE
+    if _COOKIE is None:
+        _COOKIE = get_cookie_csrf(url="https://legulegu.com/stockdata/sz50-ttm-lyr")
+    return _COOKIE
 
 
 def _to_float(x):
@@ -103,6 +125,27 @@ def _to_float(x):
         return f if f == f else None  # 过滤 NaN
     except Exception:
         return None
+
+
+def _stitch(primary, secondary):
+    """拼接两条 (dates, values)：primary 在其覆盖范围内权威，secondary 只补 primary
+    起始日【之前】的更早历史。用于"近 ~10 年用 funddb（准、对齐韭圈儿），更早用 legulegu
+    延长"。两源算法略异，接缝处(primary 起始日)可能有极小台阶，对长周期分位可忽略。"""
+    pdates, pvals = primary
+    sdates, svals = secondary
+    if not pdates:
+        return secondary
+    if not sdates:
+        return primary
+    cut = pdates[0]
+    merged = {}
+    for d, v in zip(sdates, svals):
+        if d < cut:
+            merged[d] = v          # 只取 secondary 比 primary 更早的部分
+    for d, v in zip(pdates, pvals):
+        merged[d] = v              # primary 在其范围内覆盖
+    dates = sorted(merged)
+    return dates, [merged[d] for d in dates]
 
 
 # 中证官方 index-perf 接口：兜底用，覆盖所有中证系指数（含中证全指、上证指数、
@@ -178,7 +221,7 @@ def _fetch_hsi_valuation():
             HS_DIVIDEND_URL,
             params={"token": TOKEN, "indexCode": "HSI"},
             timeout=30,
-            **COOKIE,
+            **_cookie(),
         )
         rows = r.json() or []
         rows_by_date = {}
@@ -210,7 +253,7 @@ def _fetch(url, code, value_field):
                 url,
                 params={"token": TOKEN, "indexCode": code + suf},
                 timeout=25,
-                **COOKIE,
+                **_cookie(),
             )
             data = r.json().get("data")
             if data:
@@ -306,86 +349,97 @@ def _fetch_point_history(code, name, secid):
 
 
 def fetch_one(code, name, secid=""):
-    """返回日期对齐后的 {name, dates, close?, pe?, pb?, dy?} 或 None。"""
+    """返回日期对齐后的 {name, dates, close?, pe?, pb?, dy?} 或 None。
+
+    源优先级（逐字段、缺啥补啥）：
+      点位 close —— 官方多源（新浪/腾讯/东财，带新鲜度校验）。
+      PE/PB/股息率 —— 主源 funddb(韭圈儿) 10 年；funddb 缺某字段才回退：
+        A股→乐咕(legulegu)/中证；HSI→乐咕；最后 lixinger 种子兜底。
+    funddb 失效/某字段缺失时自动降级，绝不用空数据覆盖——抓不到就保留既有文件（main 跳过写入）。
+    """
     series = {}
     sources = {}
     seed = _load_seed(code)
-    seed_has_dy = bool(seed and any(v is not None for v in (seed.get("dy") or [])))
 
-    # 历史点位：多源兜底，写进静态 JSON，前端不再硬依赖浏览器实时接口。
+    # 1. 历史点位：官方多源兜底，写进静态 JSON，前端不再硬依赖浏览器实时接口。
     pdates, pclose, psrc = _fetch_point_history(code, name, secid)
     if pdates:
         series["close"] = (pdates, pclose)
         sources["close"] = "akshare:" + psrc
 
+    # 2. 主源 funddb：PE/PB/股息率 10 年（覆盖中港美、口径对齐大众、无 token）。
+    gu = GU_CODE_MAP.get(code)
+    if gu and jq is not None:
+        try:
+            fv = jq.fetch_valuation(gu)
+            if fv and fv.get("dates"):
+                for field in ("pe", "pb", "dy"):
+                    vals = fv.get(field)
+                    if vals and any(v is not None for v in vals):
+                        series[field] = (fv["dates"], vals)
+                        sources[field] = "jiucaishuo"
+                        print(f"  · {name} / {field}(funddb): {sum(v is not None for v in vals)} 条")
+        except Exception as e:
+            print(f"    (funddb {name}@{gu} 异常，回退兜底源: {e})")
+
+    def need(field):
+        return field not in series
+
+    # 3. A股 PE/PB：用 legulegu(2005 起~20年)接上 funddb 起始日之前的更早历史（拼成长序列，
+    #    近 10 年仍以 funddb 为准）；funddb 没给则 legulegu/中证 当主。股息率只用 funddb（对齐
+    #    韭圈儿），funddb 缺才中证兜底。乐咕 addTtmPe/addPb 才是市值加权值（裸值是等权偏大）。
     if code.isdigit():
-        # 注意乐咕字段命名反直觉：addTtmPe/addPb 才是市值加权值。
-        dates, pe, suf = _fetch(PE_URL, code, "addTtmPe")
-        if dates:
-            series["pe"] = (dates, pe)
-            sources["pe"] = "legulegu:addTtmPe"
-            print(f"  · {name} / 市盈率(乐咕 addTtmPe@{suf}): {len(dates)} 条")
+        # PE 更早历史延长源：先乐咕(2005+)，无则中证 peg（如上证指数/中证全指本就走中证）。
+        older_pe, older_tag = None, None
+        ldates, lpe, suf = _fetch(PE_URL, code, "addTtmPe")
+        if ldates:
+            older_pe, older_tag = (ldates, lpe), "legulegu"
         else:
             cdates, cpe = _fetch_csi_pe(code)
             if cdates:
-                series["pe"] = (cdates, cpe)
-                sources["pe"] = "csindex:peg"
-                print(f"  · {name} / 市盈率(中证 peg): {len(cdates)} 条")
-            else:
-                print(f"  · {name} / 市盈率: 无数据")
+                older_pe, older_tag = (cdates, cpe), "csindex"
+        if "pe" in series and older_pe and older_pe[0][0] < series["pe"][0][0]:
+            series["pe"] = _stitch(series["pe"], older_pe)
+            sources["pe"] = f"jiucaishuo+{older_tag}"
+            print(f"  · {name} / 市盈率(funddb 近10年 + {older_tag}延长): {len(series['pe'][0])} 条")
+        elif need("pe") and older_pe:
+            series["pe"] = older_pe
+            sources["pe"] = "legulegu:addTtmPe" if older_tag == "legulegu" else "csindex:peg"
+            print(f"  · {name} / 市盈率({older_tag} 兜底): {len(older_pe[0])} 条")
         time.sleep(0.4)
 
-        bdates, pb, suf = _fetch(PB_URL, code, "addPb")
-        if bdates:
-            series["pb"] = (bdates, pb)
-            sources["pb"] = "legulegu:addPb"
-            print(f"  · {name} / 市净率(addPb@{suf}): {len(bdates)} 条")
-        else:
-            print(f"  · {name} / 市净率: 无数据")
+        bdates, lpb, suf = _fetch(PB_URL, code, "addPb")
+        if "pb" in series and bdates:
+            series["pb"] = _stitch(series["pb"], (bdates, lpb))
+            sources["pb"] = "jiucaishuo+legulegu"
+            print(f"  · {name} / 市净率(funddb 近10年 + 乐咕延长): {len(series['pb'][0])} 条")
+        elif need("pb") and bdates:
+            series["pb"] = (bdates, lpb); sources["pb"] = "legulegu:addPb"
+            print(f"  · {name} / 市净率(乐咕 addPb@{suf} 兜底): {len(bdates)} 条")
         time.sleep(0.4)
 
-        if seed_has_dy:
-            # 已有 lixinger 10 年 dy 种子（下方统一覆盖），不必再抓中证 20 天。
-            print(f"  · {name} / 股息率: 用 lixinger 种子（跳过中证 20 天）")
-        else:
+        if need("dy"):
             ddates, dy = _fetch_csi_dividend(code)
             if ddates:
-                series["dy"] = (ddates, dy)
-                sources["dy"] = "csindex:D/P2"
-                print(f"  · {name} / 股息率(中证 D/P2): {len(ddates)} 条")
-            else:
-                print(f"  · {name} / 股息率: 无数据")
-    elif code == "HSI":
-        # 有 lixinger 种子(含 pe/dy)时跳过乐咕 HSI 请求——种子下方会整体覆盖，省一次日常依赖。
-        seed_has_val = bool(seed and (
-            any(v is not None for v in (seed.get("pe") or []))
-            or any(v is not None for v in (seed.get("dy") or []))
-        ))
-        if seed_has_val:
-            print(f"  · {name} / 估值: 用 lixinger 种子（跳过乐咕 HSI）")
-        else:
-            hdates, hpe, hdy = _fetch_hsi_valuation()
-            if hdates and any(value is not None for value in hpe):
-                series["pe"] = (hdates, hpe)
-                sources["pe"] = "legulegu:HSI"
-                print(f"  · {name} / 市盈率(乐咕 HSI): {len(hdates)} 条")
-            if hdates and any(value is not None for value in hdy):
-                series["dy"] = (hdates, hdy)
-                sources["dy"] = "legulegu:dvRatio"
-                print(f"  · {name} / 股息率(乐咕 dvRatio): {len(hdates)} 条")
-            else:
-                print(f"  · {name} / 股息率: 无数据")
+                series["dy"] = (ddates, dy); sources["dy"] = "csindex:D/P2"
+                print(f"  · {name} / 股息率(中证 D/P2 兜底): {len(ddates)} 条")
+    elif code == "HSI" and (need("pe") or need("dy")):
+        hdates, hpe, hdy = _fetch_hsi_valuation()
+        if need("pe") and hdates and any(v is not None for v in hpe):
+            series["pe"] = (hdates, hpe); sources["pe"] = "legulegu:HSI"
+            print(f"  · {name} / 市盈率(乐咕 HSI 兜底): {len(hdates)} 条")
+        if need("dy") and hdates and any(v is not None for v in hdy):
+            series["dy"] = (hdates, hdy); sources["dy"] = "legulegu:dvRatio"
+            print(f"  · {name} / 股息率(乐咕 dvRatio 兜底): {len(hdates)} 条")
 
-    # lixinger 种子覆盖：把种子里有的 pe/pb/dy 换成 10 年长历史。按市场天然各取所需——
-    # A股种子只含 dy（升级股息率），港美种子含 pe/pb/dy（连 HSTECH/SPX 这些免费源够不到
-    # 的也补上）。close（点位）仍来自上面的免费多源兜底，种子不含。
+    # 4. lixinger 种子：最终兜底，只填 funddb 与老源都没拿到的字段（仅有种子的指数才有）。
     if seed and seed.get("dates"):
         for field in ("pe", "pb", "dy"):
-            vals = seed.get(field)
-            if vals and any(v is not None for v in vals):
-                series[field] = (seed["dates"], vals)
-                sources[field] = "lixinger"
-                print(f"  · {name} / {field}(lixinger 种子): {sum(v is not None for v in vals)} 条")
+            if need(field):
+                vals = seed.get(field)
+                if vals and any(v is not None for v in vals):
+                    series[field] = (seed["dates"], vals); sources[field] = "lixinger"
+                    print(f"  · {name} / {field}(lixinger 种子兜底): {sum(v is not None for v in vals)} 条")
 
     aligned = merge_series(series)
     if not aligned.get("dates"):

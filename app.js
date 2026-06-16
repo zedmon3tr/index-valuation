@@ -106,18 +106,25 @@ const EM = {
     return { code: d.code, name: d.name, rows };
   },
 
-  // 全网搜索（任意指数 / 股票），增强搜索
+  // 全网搜索回退（东财）。当前只做【指数】展示，故过滤到 SecurityTypeName==="指数"，
+  // 屏蔽个股/ETF/基金（深A/沪A/港股/美股/基金等）。要扩展到个股时，把对应类型加进
+  // SEARCH_ALLOWED_TYPES 即可，接口结构不变。
   async suggest(kw) {
     const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(kw)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=15`;
     try {
       const r = await jsonp(url);
       const data = r && r.QuotationCodeTable && r.QuotationCodeTable.Data ? r.QuotationCodeTable.Data : [];
-      return data.map((x) => ({
-        secid: x.QuoteID, code: x.Code, name: x.Name, type: x.SecurityTypeName || "",
-      }));
+      return data
+        .filter((x) => SEARCH_ALLOWED_TYPES.includes(x.SecurityTypeName))
+        .map((x) => ({
+          secid: x.QuoteID, code: x.Code, name: x.Name, type: x.SecurityTypeName || "",
+        }));
     } catch (e) { return []; }
   },
 };
+
+// 搜索当前只暴露指数（屏蔽个股，保留可扩展：加类型即可放开，如 "沪A"/"深A"/"港股"/"美股"）。
+const SEARCH_ALLOWED_TYPES = ["指数"];
 
 /* ---------- 3b. 估值数据（akshare 预生成的 JSON） ---------- */
 const valDataCache = {};
@@ -126,7 +133,7 @@ async function loadValuation(code) {
   try {
     // no-cache（而非 no-store）：每次仍向服务器校验，保证每天 18:00 数据更新后不读旧；
     // 但靠 ETag/Last-Modified 命中 304，重复访问省掉 ~190KB 正文下载（GitHub Pages 支持 ETag）。
-    const r = await fetch("./data/" + code + ".json?v=20260614-7", { cache: "no-cache" });
+    const r = await fetch("./data/" + code + ".json?v=20260616-11", { cache: "no-cache" });
     if (!r.ok) throw new Error("404");
     const j = await r.json();
     valDataCache[code] = j;
@@ -220,17 +227,23 @@ const RANGES = [
   { k: "ALL", label: "上市以来", days: 1e9 },
   { k: "CUSTOM", label: "自定义", days: null },
 ];
+// 周期：日/周/月。周线=每周最后一个交易日值、月线=每月最后一个交易日值
+// （见 valuation-core.js resampleSeries 的分桶取末值规则）。
+const PERIODS = [
+  { k: "D", label: "日" },
+  { k: "W", label: "周" },
+  { k: "M", label: "月" },
+];
 const METRICS = {
   close: { label: "指数点位", short: "点位", current: "当前点位" },
   pe: { label: "市盈率 TTM", short: "市盈率", current: "当前 PE" },
   pb: { label: "市净率 LF", short: "市净率", current: "当前 PB" },
-  dy: { label: "股息率", short: "股息率", current: "当前股息率", unit: "%", higherIsBetter: true,
-        note: "股息率为理杏仁市值加权口径；红利类指数（如中证红利）可能略低于韭圈儿/Wind 的官方派息口径" },
+  dy: { label: "股息率", short: "股息率", current: "当前股息率", unit: "%", higherIsBetter: true },
 };
 const detailState = {
   range: "10Y",
   metric: "close",
-  period: "D",
+  period: "W",  // 默认周线（每周最后交易日值）；用户可在周期分段控件切日/月
   ma: 0,
   view: "stats",
   showQuantiles: true,
@@ -262,7 +275,7 @@ async function renderDetail(secid) {
   }
   // 优先默认显示估值指标（点位会作为叠加线始终展示）；仅有点位数据的指数才默认点位。
   const defaultMetric = (val && Core.hasSeries(val.pe)) ? "pe" : (val && Core.hasSeries(val.pb)) ? "pb" : (val && Core.hasSeries(val.dy)) ? "dy" : "close";
-  Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "D", ma: 0, view: "stats", showQuantiles: true, showStd: false, customStart: "", customEnd: "" });
+  Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "W", ma: 0, view: "stats", showQuantiles: true, showStd: false, customStart: "", customEnd: "" });
 
   view.innerHTML = `
     <section class="detail-workspace">
@@ -274,7 +287,12 @@ async function renderDetail(secid) {
               ${RANGES.map((r) => `<button class="segment ${r.k === detailState.range ? "active" : ""}" data-range="${r.k}">${r.label}</button>`).join("")}
             </div>
           </div>
-          <label class="select-control"><span>周期</span><select id="periodSelect"><option value="D">日</option><option value="W">周</option><option value="M">月</option></select></label>
+          <div class="control-group period-control">
+            <span class="control-label">周期</span>
+            <div class="segmented" id="periodTabs">
+              ${PERIODS.map((p) => `<button class="segment ${p.k === detailState.period ? "active" : ""}" data-period="${p.k}">${p.label}</button>`).join("")}
+            </div>
+          </div>
           <div class="control-group metric-control">
             <span class="control-label">估值指标</span>
             <div class="segmented" id="metricTabs"></div>
@@ -358,7 +376,13 @@ function bindDetailControls(secid, quote) {
     document.getElementById("tableView").hidden = detailState.view !== "table";
     if (detailState.view === "stats") requestAnimationFrame(() => chart && chart.resize());
   };
-  document.getElementById("periodSelect").onchange = (event) => { detailState.period = event.target.value; redraw(); };
+  document.getElementById("periodTabs").onclick = (event) => {
+    const target = event.target.closest("[data-period]");
+    if (!target) return;
+    detailState.period = target.dataset.period;
+    document.querySelectorAll("#periodTabs .segment").forEach((item) => item.classList.toggle("active", item.dataset.period === detailState.period));
+    redraw();
+  };
   document.getElementById("maSelect").onchange = (event) => { detailState.ma = Number(event.target.value); redraw(); };
   document.getElementById("quantileToggle").onchange = (event) => { detailState.showQuantiles = event.target.checked; redraw(); };
   document.getElementById("stdToggle").onchange = (event) => { detailState.showStd = event.target.checked; redraw(); };
