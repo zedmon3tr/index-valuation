@@ -6,6 +6,26 @@
 
 const Core = window.ValuationCore;
 
+/* ---------- 0. echarts 按需懒加载 ----------
+ * echarts.min.js ~1MB，仅详情页画图用。首页不再同步阻塞加载它（见 index.html）。
+ * 首次进入详情页时注入 <script>，promise 缓存确保全程只加载一次；后续重绘直接复用
+ * 已就绪的全局 echarts。注入失败（网络/CDN 不可用）时 reject，详情页据此降级提示。 */
+const ECHARTS_SRC = "https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js";
+let echartsPromise = null;
+function loadECharts() {
+  if (window.echarts) return Promise.resolve(window.echarts);
+  if (echartsPromise) return echartsPromise;
+  echartsPromise = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = ECHARTS_SRC;
+    s.async = true;
+    s.onload = () => (window.echarts ? resolve(window.echarts) : reject(new Error("echarts 未就绪")));
+    s.onerror = () => { echartsPromise = null; s.remove(); reject(new Error("echarts 加载失败")); };
+    document.head.appendChild(s);
+  });
+  return echartsPromise;
+}
+
 /* ---------- 1. 主流指数清单（单一数据源：indexes.json） ----------
  * 首页卡片、本地搜索、以及数据脚本 scripts/build_data.py 都读这份清单。
  * 想增删首页指数，只改 indexes.json 一处即可，前端与数据抓取自动同步。 */
@@ -104,7 +124,9 @@ const valDataCache = {};
 async function loadValuation(code) {
   if (code in valDataCache) return valDataCache[code];
   try {
-    const r = await fetch("./data/" + code + ".json?v=20260614-7", { cache: "no-store" });
+    // no-cache（而非 no-store）：每次仍向服务器校验，保证每天 18:00 数据更新后不读旧；
+    // 但靠 ETag/Last-Modified 命中 304，重复访问省掉 ~190KB 正文下载（GitHub Pages 支持 ETag）。
+    const r = await fetch("./data/" + code + ".json?v=20260614-7", { cache: "no-cache" });
     if (!r.ok) throw new Error("404");
     const j = await r.json();
     valDataCache[code] = j;
@@ -310,6 +332,8 @@ async function renderDetail(secid) {
 
   bindDetailControls(secid, quote);
   buildMetricTabs(secid, quote, val);
+  // 进入详情页才按需加载 echarts；失败不致命，renderChart 会降级，统计/明细照常可用。
+  await loadECharts().catch(() => {});
   drawDetail(secid, quote);
   window.onresize = () => chart && chart.resize();
 }
@@ -511,6 +535,15 @@ function renderDetailTable(series, pointValues, metric) {
 
 function renderChart(series, pointValues, stats, metric) {
   const el = document.getElementById("chart");
+  // echarts 未就绪时降级：统计与明细仍可用，仅图表占位提示。
+  // 区分「加载中」(promise 进行中——慢网下首屏点击控件会走到这里) 与「加载失败」
+  // (onerror 已把 echartsPromise 置空)，避免给用户看错误的"失败"字样。
+  // 同时清掉可能指向已 dispose/旧页实例的 chart 句柄，防止 onresize 调到死实例报错。
+  if (!window.echarts) {
+    if (chart) { try { chart.dispose(); } catch (e) {} chart = null; }
+    el.innerHTML = `<div class="chart-fallback">${echartsPromise ? "图表组件加载中…" : "图表组件加载失败，统计分析与明细数据仍可查看。"}</div>`;
+    return;
+  }
   if (chart) chart.dispose();
   chart = echarts.init(el);
   // 行情接口不可用时 pointValues 全为空，不再叠加「指数点位」副轴
