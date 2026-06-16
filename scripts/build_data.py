@@ -33,7 +33,7 @@ import sys
 import time
 import traceback
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import md5
 
 try:
@@ -226,6 +226,9 @@ def _fetch(url, code, value_field):
 # 历史点位（指数收盘点位）起始日期：与估值数据同期（2005 起），避免老指数（如上证
 # 指数自 1990 年）把 JSON 撑得过大；分位分析也以这十余年为准。
 POINT_START = "2005-01-01"
+# 点位源"足量但过期"判定：末日期早于今天这么多天即视为过期、回退下一个源。
+# 留足缓冲（节假日/周末/数据延迟），10 天足够区分"几天前"与"几年前截断"。
+POINT_FRESH_DAYS = 10
 
 
 def _normalize_close_df(df, start=POINT_START):
@@ -277,15 +280,27 @@ def _fetch_point_history(code, name, secid):
         attempts = [
             ("global_em", lambda: ak.index_global_hist_em(symbol=name)),
         ]
+    # 新鲜度校验：某些源（如新浪对 000922/000985）会截断到很早就停（数据"足量但过期"）。
+    # 只看 ≥30 条会误用过期源，故还要求末日期足够新；不够新就回退下一个源；全都不新时
+    # 退而求其次用末日期最新的那个（总比没有强）。
+    fresh_cutoff = (datetime.now() - timedelta(days=POINT_FRESH_DAYS)).strftime("%Y-%m-%d")
+    stale_best = None  # (dates, closes, src)：兜底，取末日期最新者
     for src, fn in attempts:
         try:
             dates, closes = _normalize_close_df(fn())
             if dates and len(dates) >= 30:
-                print(f"  · {name} / 点位({src}): {len(dates)} 条")
-                return dates, closes, src
+                if dates[-1] >= fresh_cutoff:
+                    print(f"  · {name} / 点位({src}): {len(dates)} 条")
+                    return dates, closes, src
+                print(f"    (点位 {name}@{src} 末日 {dates[-1]} 过期，尝试下一个源)")
+                if stale_best is None or dates[-1] > stale_best[0][-1]:
+                    stale_best = (dates, closes, src)
         except Exception as e:
             print(f"    (点位 {name}@{src} 异常: {e})")
         time.sleep(0.3)
+    if stale_best:
+        print(f"  · {name} / 点位({stale_best[2]}, 仅到 {stale_best[0][-1]}): 各源均不够新，用最新可得")
+        return stale_best
     print(f"  · {name} / 点位: 无数据（前端回退实时接口）")
     return None, None, None
 
