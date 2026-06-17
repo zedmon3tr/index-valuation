@@ -130,5 +130,24 @@
     return Array.isArray(values) && finiteValues(values).length >= minimum;
   }
 
-  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignToDates, alignPrevious, hasSeries };
+  function calculateDcaLevels(options = {}) {
+    const initialPrice = Number(options.initialPrice);
+    const maxCount = Number.isFinite(Number(options.maxCount)) ? Math.max(1, Math.floor(Number(options.maxCount))) : 60;
+    const count = Math.min(Math.floor(Number(options.count)), maxCount);
+    const dropPct = Number(options.dropPct);
+    if (!Number.isFinite(initialPrice) || initialPrice <= 0) return [];
+    if (!Number.isInteger(count) || count <= 0) return [];
+    if (!Number.isFinite(dropPct) || dropPct <= 0 || dropPct >= 100) return [];
+    return Array.from({ length: count }, (_, index) => {
+      const price = initialPrice * (1 - dropPct / 100) ** index;
+      return {
+        round: index + 1,
+        price,
+        dropFromPreviousPct: index === 0 ? 0 : dropPct,
+        dropFromInitialPct: ((initialPrice - price) / initialPrice) * 100,
+      };
+    });
+  }
+
+  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignToDates, alignPrevious, hasSeries, calculateDcaLevels };
 });

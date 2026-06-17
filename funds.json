@@ -1,0 +1,17 @@
+[
+  { "secid": "1.510300", "code": "510300", "name": "沪深300ETF华泰柏瑞", "trackIndex": "000300", "market": "基金 / ETF", "home": true },
+  { "secid": "1.510050", "code": "510050", "name": "上证50ETF华夏", "trackIndex": "000016", "market": "基金 / ETF", "home": true },
+  { "secid": "1.588000", "code": "588000", "name": "科创50ETF华夏", "trackIndex": "000688", "market": "基金 / ETF", "home": true },
+  { "secid": "0.159915", "code": "159915", "name": "创业板ETF易方达", "trackIndex": "399006", "market": "基金 / ETF", "home": true },
+  { "secid": "1.510500", "code": "510500", "name": "中证500ETF南方", "trackIndex": "000905", "market": "基金 / ETF", "home": true },
+  { "secid": "1.512100", "code": "512100", "name": "中证1000ETF南方", "trackIndex": "000852", "market": "基金 / ETF", "home": true },
+  { "secid": "1.513100", "code": "513100", "name": "纳指ETF国泰", "trackIndex": "NDX", "market": "基金 / ETF", "home": true },
+  { "secid": "1.513130", "code": "513130", "name": "恒生科技ETF华泰柏瑞", "trackIndex": "HSTECH", "market": "基金 / ETF", "home": true },
+  { "secid": "0.159919", "code": "159919", "name": "沪深300ETF嘉实", "trackIndex": "000300", "market": "基金 / ETF", "home": false },
+  { "secid": "1.510880", "code": "510880", "name": "红利ETF华泰柏瑞", "trackIndex": "000015", "market": "基金 / ETF", "home": false },
+  { "secid": "1.515080", "code": "515080", "name": "中证红利ETF招商", "trackIndex": "000922", "market": "基金 / ETF", "home": false },
+  { "secid": "1.512690", "code": "512690", "name": "酒ETF鹏华", "trackIndex": "399997", "market": "基金 / ETF", "home": false },
+  { "secid": "1.512170", "code": "512170", "name": "医疗ETF华宝", "trackIndex": "399989", "market": "基金 / ETF", "home": false },
+  { "secid": "0.159928", "code": "159928", "name": "消费ETF汇添富", "trackIndex": "000932", "market": "基金 / ETF", "home": false },
+  { "secid": "1.513500", "code": "513500", "name": "标普500ETF博时", "trackIndex": "SPX", "market": "基金 / ETF", "home": false }
+]

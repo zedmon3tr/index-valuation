@@ -30,14 +30,16 @@ function loadECharts() {
  * 首页卡片、本地搜索、以及数据脚本 scripts/build_data.py 都读这份清单。
  * 想增删首页指数，只改 indexes.json 一处即可，前端与数据抓取自动同步。 */
 let POPULAR = [];
+// 基金（ETF）主表：funds.json。每只基金通过 trackIndex 借用其跟踪指数的估值数据
+// （ETF 自身无独立 PE/PB），详情页的分位 / 机会线即来自该指数。
+let FUNDS = [];
 async function loadIndexes() {
-  try {
-    const r = await fetch("./indexes.json", { cache: "no-cache" });
-    POPULAR = await r.json();
-  } catch (e) {
-    console.error("加载 indexes.json 失败：", e);
-    POPULAR = [];
-  }
+  const [idx, funds] = await Promise.all([
+    fetch("./indexes.json", { cache: "no-cache" }).then((r) => r.json()).catch((e) => { console.error("加载 indexes.json 失败：", e); return []; }),
+    fetch("./funds.json", { cache: "no-cache" }).then((r) => r.json()).catch((e) => { console.error("加载 funds.json 失败：", e); return []; }),
+  ]);
+  POPULAR = idx;
+  FUNDS = funds;
 }
 
 /* ---------- 2. JSONP 工具 ---------- */
@@ -106,8 +108,8 @@ const EM = {
     return { code: d.code, name: d.name, rows };
   },
 
-  // 全网搜索回退（东财）。当前只做【指数】展示，故过滤到 SecurityTypeName==="指数"，
-  // 屏蔽个股/ETF/基金（深A/沪A/港股/美股/基金等）。要扩展到个股时，把对应类型加进
+  // 全网搜索回退（东财）。当前放开【指数 + 基金】（ETF/LOF 在接口里统一是 SecurityTypeName==="基金"），
+  // 仍屏蔽个股（沪A/深A/港股/美股）与板块。要再扩展时，把对应类型加进
   // SEARCH_ALLOWED_TYPES 即可，接口结构不变。
   async suggest(kw) {
     const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(kw)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=15`;
@@ -123,8 +125,8 @@ const EM = {
   },
 };
 
-// 搜索当前只暴露指数（屏蔽个股，保留可扩展：加类型即可放开，如 "沪A"/"深A"/"港股"/"美股"）。
-const SEARCH_ALLOWED_TYPES = ["指数"];
+// 搜索暴露指数 + 基金（ETF/LOF 均为 "基金"），屏蔽个股/板块。可扩展：加类型即可放开，如 "沪A"/"深A"/"港股"/"美股"。
+const SEARCH_ALLOWED_TYPES = ["指数", "基金"];
 
 /* ---------- 3b. 估值数据（akshare 预生成的 JSON） ---------- */
 const valDataCache = {};
@@ -163,10 +165,10 @@ window.addEventListener("hashchange", router);
 
 /* ---------- 7. 首页 ---------- */
 async function renderHome() {
-  // 首页只展示主表中 home 开关打开的指数（开关在 indexes.json 里逐条配置）
-  const homeList = POPULAR.filter((p) => p.home);
-  // 按市场分组渲染（顺序 A股 → 港股 → 美股；未标注 market 的归入"其他"）
-  const MARKET_ORDER = ["A股", "港股", "美股"];
+  // 首页展示主表中 home 开关打开的标的（指数在 indexes.json、基金在 funds.json 逐条配置）
+  const homeList = POPULAR.concat(FUNDS).filter((p) => p.home);
+  // 按市场分组渲染（顺序 A股 → 港股 → 美股 → 基金/ETF；未标注 market 的归入"其他"）
+  const MARKET_ORDER = ["A股", "港股", "美股", "基金 / ETF"];
   const groups = new Map();
   homeList.forEach((p) => {
     const m = p.market || "其他";
@@ -187,7 +189,7 @@ async function renderHome() {
   view.innerHTML = `
     <section class="hero">
       <h1>指数估值 · 行情分析</h1>
-      <p>搜索任意指数，查看实时点位、涨跌，以及历史点位 / PE / PB / 股息率分位分析。</p>
+      <p>搜索任意指数或基金（ETF），查看实时点位、涨跌，以及历史点位 / PE / PB / 股息率分位分析。</p>
     </section>
     ${sections}
   `;
@@ -251,9 +253,16 @@ const detailState = {
   customStart: "",
   customEnd: "",
 };
+const dcaState = {
+  initialPrice: "",
+  count: 10,
+  dropPct: 4,
+};
+const DCA_MAX_COUNT = 60;
 
 async function renderDetail(secid) {
   const known = POPULAR.find((p) => p.secid === secid);
+  const fund = FUNDS.find((f) => f.secid === secid);
   view.innerHTML = `<div class="loading">加载中…</div>`;
   // 行情（东方财富）与历史 K 线都可能失败：都不致命，逐一降级。
   let quote = null, kdata = null;
@@ -261,11 +270,14 @@ async function renderDetail(secid) {
     EM.quote(secid).catch(() => null),
     EM.kline(secid).catch(() => null),
   ]);
-  const name = (quote && quote.name) || (kdata && kdata.name) || (known && known.name) || secid;
-  const code = (quote && quote.code) || (known && known.code) || secid.split(".")[1];
+  const name = (quote && quote.name) || (kdata && kdata.name) || (fund && fund.name) || (known && known.name) || secid;
+  // 展示用 code 取标的自身（基金显示自己的代码）；估值用 code 走 secid_to_code（基金→跟踪指数）。
+  const code = (quote && quote.code) || (fund && fund.code) || (known && known.code) || secid.split(".")[1];
+  const trackName = fund ? ((POPULAR.find((p) => p.code === fund.trackIndex) || {}).name || fund.trackIndex) : "";
 
   // 历史点位优先用 CI 预生成的静态 close（多源兜底），实时 kline 仅作补充。
-  const val = await loadValuation(code);
+  // 基金借用跟踪指数的估值数据，故用 secid_to_code 解析（基金→trackIndex）。
+  const val = await loadValuation(secid_to_code(secid, quote));
   klineCache[secid] = kdata && kdata.rows && kdata.rows.length ? kdata : { rows: [] };
   const hasPoint = !!(val && Core.hasSeries(val.close)) || klineCache[secid].rows.length > 0;
   const hasVal = !!(val && (Core.hasSeries(val.pe) || Core.hasSeries(val.pb) || Core.hasSeries(val.dy)));
@@ -315,10 +327,11 @@ async function renderDetail(secid) {
       </div>
 
       ${hasPoint ? "" : `<div class="feed-notice">实时行情接口（东方财富）暂时不可用，「指数点位」已置灰，仅展示历史 PE / PB / 股息率分位分析。</div>`}
+      ${fund ? `<div class="feed-notice">「${name}」是 ETF，下方估值分位 / 机会线基于其跟踪指数 <b>${trackName}（${fund.trackIndex}）</b>；上方为基金自身实时价格。</div>` : ""}
 
       <div class="instrument-strip">
         <div>
-          <a class="back" href="#/">‹ 返回指数列表</a>
+          <a class="back" href="#/">‹ 返回${fund ? "首页" : "指数列表"}</a>
           <div class="instrument-title"><strong>${name}</strong><span>${code} · ${secid}</span></div>
         </div>
         <div class="market-quote">
@@ -329,7 +342,7 @@ async function renderDetail(secid) {
 
       <div class="analysis-card" id="statsView">
         <aside class="stats-pane">
-          <div class="pane-title" id="statsTitle">指数点位</div>
+          <div class="pane-title" id="statsTitle">统计概览</div>
           <div class="stats" id="stats"></div>
         </aside>
         <div class="chart-pane">
@@ -337,11 +350,44 @@ async function renderDetail(secid) {
             <div><strong id="chartTitle">指数点位</strong><span id="coverageBadge"></span></div>
             <span class="source-note" id="sourceNote"></span>
           </div>
-          <div id="chart"></div>
           <div class="pct-badge" id="pctBadge"></div>
+          <div id="chart"></div>
           <div class="note" id="snapNote"></div>
         </div>
       </div>
+      <section class="dca-card" id="dcaCalculator" aria-labelledby="dcaTitle">
+        <div class="dca-heading">
+          <div>
+            <strong id="dcaTitle">定投点位</strong>
+            <span>按上一次买入点位继续下跌计算</span>
+          </div>
+          <button class="reset-button" id="dcaReset" type="button">重置</button>
+        </div>
+        <div class="dca-controls">
+          <label>
+            <span>初次买入点位</span>
+            <input id="dcaInitialPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="输入点位">
+          </label>
+          <label>
+            <span>定投次数</span>
+            <input id="dcaCount" type="number" min="1" max="60" step="1" inputmode="numeric" value="10">
+          </label>
+          <label>
+            <span>每次跌幅</span>
+            <div class="suffix-input">
+              <input id="dcaDropPct" type="number" min="0.01" max="99.99" step="0.01" inputmode="decimal" value="4">
+              <span>%</span>
+            </div>
+          </label>
+        </div>
+        <div class="dca-table-wrap">
+          <table class="dca-table">
+            <thead><tr><th>次数</th><th>买入点位</th><th>较上次下跌</th><th>较首次下跌</th></tr></thead>
+            <tbody id="dcaRows"></tbody>
+          </table>
+          <div class="dca-empty" id="dcaEmpty">输入初次买入点位后，会自动生成 10 个买入点位。</div>
+        </div>
+      </section>
       <div class="table-card" id="tableView" hidden>
         <div class="table-heading"><strong id="tableTitle">明细数据</strong><span id="tableCount"></span></div>
         <div class="table-scroll"><table><thead><tr><th>日期</th><th id="metricColumn">指标值</th><th>指数点位</th><th>相对前值</th></tr></thead><tbody id="detailRows"></tbody></table></div>
@@ -350,6 +396,7 @@ async function renderDetail(secid) {
   `;
 
   bindDetailControls(secid, quote);
+  bindDcaCalculator();
   buildMetricTabs(secid, quote, val);
   // 进入详情页才按需加载 echarts；失败不致命，renderChart 会降级，统计/明细照常可用。
   await loadECharts().catch(() => {});
@@ -373,6 +420,7 @@ function bindDetailControls(secid, quote) {
     detailState.view = target.dataset.view;
     document.querySelectorAll("#viewTabs .segment").forEach((item) => item.classList.toggle("active", item.dataset.view === detailState.view));
     document.getElementById("statsView").hidden = detailState.view !== "stats";
+    document.getElementById("dcaCalculator").hidden = detailState.view !== "stats";
     document.getElementById("tableView").hidden = detailState.view !== "table";
     if (detailState.view === "stats") requestAnimationFrame(() => chart && chart.resize());
   };
@@ -388,6 +436,56 @@ function bindDetailControls(secid, quote) {
   document.getElementById("stdToggle").onchange = (event) => { detailState.showStd = event.target.checked; redraw(); };
   document.getElementById("customStart").onchange = (event) => { detailState.customStart = event.target.value; redraw(); };
   document.getElementById("customEnd").onchange = (event) => { detailState.customEnd = event.target.value; redraw(); };
+}
+
+function bindDcaCalculator() {
+  const initialInput = document.getElementById("dcaInitialPrice");
+  const countInput = document.getElementById("dcaCount");
+  const dropInput = document.getElementById("dcaDropPct");
+  const resetButton = document.getElementById("dcaReset");
+  if (!initialInput || !countInput || !dropInput || !resetButton) return;
+  Object.assign(dcaState, { initialPrice: "", count: 10, dropPct: 4 });
+  const normalizeCountInput = () => {
+    const count = Math.floor(Number(countInput.value));
+    if (!Number.isFinite(count)) return "";
+    return String(Math.max(1, Math.min(DCA_MAX_COUNT, count)));
+  };
+  const sync = () => {
+    const normalizedCount = normalizeCountInput();
+    if (normalizedCount && countInput.value !== normalizedCount) countInput.value = normalizedCount;
+    dcaState.initialPrice = initialInput.value;
+    dcaState.count = normalizedCount;
+    dcaState.dropPct = dropInput.value;
+    renderDcaRows();
+  };
+  initialInput.value = "";
+  countInput.value = "10";
+  dropInput.value = "4";
+  [initialInput, countInput, dropInput].forEach((input) => input.addEventListener("input", sync));
+  resetButton.addEventListener("click", () => {
+    initialInput.value = "";
+    countInput.value = "10";
+    dropInput.value = "4";
+    sync();
+    initialInput.focus();
+  });
+  renderDcaRows();
+}
+
+function renderDcaRows() {
+  const rowsEl = document.getElementById("dcaRows");
+  const emptyEl = document.getElementById("dcaEmpty");
+  if (!rowsEl || !emptyEl) return;
+  const levels = Core.calculateDcaLevels(dcaState);
+  emptyEl.hidden = levels.length > 0;
+  rowsEl.innerHTML = levels.map((level) => `
+    <tr>
+      <td>第 ${level.round} 次</td>
+      <td>${fmt(level.price)}</td>
+      <td>${level.round === 1 ? "—" : "-" + level.dropFromPreviousPct.toFixed(2) + "%"}</td>
+      <td>${level.round === 1 ? "—" : "-" + level.dropFromInitialPct.toFixed(2) + "%"}</td>
+    </tr>
+  `).join("");
 }
 
 function buildMetricTabs(secid, quote, val) {
@@ -479,8 +577,12 @@ function drawDetail(secid, quote) {
   renderChart(series, pointValues, stats, metric);
 }
 
-// 估值缓存以 code 为键，这里从 secid/quote 推出 code
+// 估值缓存以 code 为键，这里从 secid/quote 推出 code。
+// 基金（ETF）自身无估值数据，统一映射到它跟踪的指数 code（trackIndex），
+// 借用该指数的 data/<code>.json —— 保证 loadValuation 写入键与各处查询键一致。
 function secid_to_code(secid, quote) {
+  const fund = FUNDS.find((f) => f.secid === secid);
+  if (fund) return fund.trackIndex;
   if (quote && quote.code) return quote.code;
   const known = POPULAR.find((p) => p.secid === secid);
   if (known) return known.code;
@@ -489,7 +591,7 @@ function secid_to_code(secid, quote) {
 
 function renderStats(stats, metric) {
   const box = document.getElementById("stats");
-  document.getElementById("statsTitle").textContent = metric.label;
+  document.getElementById("statsTitle").textContent = "统计概览";
   if (!stats) {
     box.innerHTML = `<div class="empty-state">所选区间没有可用数据</div>`;
     return;
@@ -516,20 +618,20 @@ function renderPctBadge(stats, metric) {
   const box = document.getElementById("pctBadge");
   if (!stats) { box.innerHTML = ""; return; }
   const p = Math.max(0, Math.min(100, stats.percentile));
-  let label = "适中", color = "var(--median)";
-  if (metric.higherIsBetter) {
-    if (p >= 80) { label = "高股息"; color = "var(--chance)"; }
-    else if (p <= 20) { label = "低股息"; color = "var(--danger)"; }
-  } else {
-    if (p >= 80) { label = "偏高估"; color = "var(--danger)"; }
-    else if (p <= 20) { label = "偏低估"; color = "var(--chance)"; }
+  const zone = p >= 80 ? "high" : p <= 20 ? "low" : "mid";
+  // 估值类（PE/PB）分位越高越贵；股息率越高越好；点位无估值含义，只描述高低位。
+  let verdict, color;
+  if (metric.higherIsBetter) {                // 股息率
+    verdict = zone === "high" ? "股息偏高" : zone === "low" ? "股息偏低" : "股息适中";
+    color = zone === "high" ? "var(--chance)" : zone === "low" ? "var(--danger)" : "var(--median)";
+  } else if (metric.short === "点位") {        // 指数点位
+    verdict = zone === "high" ? "处于历史高位" : zone === "low" ? "处于历史低位" : "处于历史中位";
+    color = zone === "high" ? "var(--danger)" : zone === "low" ? "var(--chance)" : "var(--median)";
+  } else {                                     // 市盈率 / 市净率
+    verdict = zone === "high" ? "估值偏高" : zone === "low" ? "估值偏低" : "估值合理";
+    color = zone === "high" ? "var(--danger)" : zone === "low" ? "var(--chance)" : "var(--median)";
   }
-  const gradient = metric.higherIsBetter
-    ? "linear-gradient(90deg,var(--danger),var(--median),var(--chance))"
-    : "linear-gradient(90deg,var(--chance),var(--median),var(--danger))";
-  box.innerHTML =
-    `<span>当前分位 <b style="color:${color}">${p.toFixed(1)}% · ${label}</b></span>
-     <span class="bar" style="background:${gradient}"><i style="left:${p}%"></i></span>`;
+  box.innerHTML = `当前${metric.short} <b style="color:${color}">${verdict}</b> · 历史分位 ${p.toFixed(1)}%`;
 }
 
 function renderCoverage(series, metric, source) {
@@ -639,12 +741,14 @@ let searchTimer = null, activeIdx = -1, curResults = [];
 function localSearch(kw) {
   kw = kw.trim().toLowerCase();
   if (!kw) return [];
-  return POPULAR.filter((p) => p.name.toLowerCase().includes(kw) || p.code.toLowerCase().includes(kw))
-    .map((p) => ({ secid: p.secid, code: p.code, name: p.name, type: "指数" }));
+  const hit = (arr, type) => arr
+    .filter((p) => p.name.toLowerCase().includes(kw) || p.code.toLowerCase().includes(kw))
+    .map((p) => ({ secid: p.secid, code: p.code, name: p.name, type }));
+  return hit(POPULAR, "指数").concat(hit(FUNDS, "基金"));
 }
 function renderSuggest(list) {
   curResults = list; activeIdx = -1;
-  if (!list.length) { suggestBox.innerHTML = `<div class="suggest-empty">未找到匹配指数</div>`; suggestBox.hidden = false; return; }
+  if (!list.length) { suggestBox.innerHTML = `<div class="suggest-empty">未找到匹配的指数或基金</div>`; suggestBox.hidden = false; return; }
   suggestBox.innerHTML = list.map((x, i) =>
     `<div class="suggest-item" data-i="${i}" onmousedown="goto('${x.secid}')">
        <span class="nm">${x.name}</span><span class="cd">${x.code}</span>
@@ -657,16 +761,19 @@ window.goto = (secid) => { suggestBox.hidden = true; searchInput.value = ""; loc
 searchInput.addEventListener("input", () => {
   const kw = searchInput.value.trim();
   if (!kw) { suggestBox.hidden = true; return; }
-  // 先查本地主表（indexes.json）；命中就直接用，不打外部接口
+  // 本地主表（indexes.json）命中先秒出，保证离线/快速；
   const local = localSearch(kw);
-  if (local.length) { clearTimeout(searchTimer); renderSuggest(local); return; }
-  // 表里没有 → 防抖后回退到外部接口（东方财富全网搜索）
-  suggestBox.innerHTML = `<div class="suggest-empty">搜索中…</div>`;
-  suggestBox.hidden = false;
+  if (local.length) renderSuggest(local);
+  else { suggestBox.innerHTML = `<div class="suggest-empty">搜索中…</div>`; suggestBox.hidden = false; }
+  // 始终再拉一次远程（含基金），返回后与本地按 secid 去重合并——
+  // 否则关键词命中某个指数时会短路掉基金结果（如「科创50」搜不到对应 ETF）。
   clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
     const remote = await EM.suggest(kw);
-    if (searchInput.value.trim() === kw) renderSuggest(remote.slice(0, 15));
+    if (searchInput.value.trim() !== kw) return;  // 输入已变，丢弃过期结果
+    const seen = new Set(local.map((x) => x.secid));
+    const merged = local.concat(remote.filter((x) => !seen.has(x.secid)));
+    renderSuggest(merged.slice(0, 15));
   }, 280);
 });
 searchInput.addEventListener("keydown", (e) => {
