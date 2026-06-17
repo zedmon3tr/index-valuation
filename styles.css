@@ -153,9 +153,8 @@ a{color:inherit;text-decoration:none}
 .source-note{font-size:11px;color:var(--ink-3)}
 #chart{width:100%;height:560px}
 .chart-fallback{display:flex;align-items:center;justify-content:center;height:100%;color:#909aa8;font-size:14px;text-align:center;padding:0 24px}
-.pct-badge{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2);margin:2px 0 0 18px}
-.bar{position:relative;height:8px;border-radius:999px;background:linear-gradient(90deg,var(--chance),var(--median),var(--danger));width:200px}
-.bar i{position:absolute;top:-3px;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid var(--ink);transform:translateX(-50%)}
+.pct-badge{font-size:14px;color:var(--ink-2);margin:0 0 10px 18px}
+.pct-badge b{font-weight:800}
 .note{color:var(--ink-3);font-size:12px;padding:10px 18px 16px}
 
 .table-card{margin:14px 20px 0;background:var(--surface);border:1px solid var(--line-2);border-radius:6px;box-shadow:var(--ws-shadow);overflow:hidden}
@@ -167,6 +166,27 @@ a{color:inherit;text-decoration:none}
 .table-card th:first-child,.table-card td:first-child{text-align:left}
 .table-card td{text-align:right;padding:9px 16px;border-bottom:1px solid var(--hairline)}
 .table-card tbody tr:hover{background:var(--surface-hover)}
+
+.dca-card{margin:14px 20px 0;background:var(--surface);border:1px solid var(--line-2);border-radius:6px;box-shadow:var(--ws-shadow);overflow:hidden}
+.dca-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:14px 18px;border-bottom:1px solid var(--line-2)}
+.dca-heading strong{display:block;font-size:16px}
+.dca-heading span{display:block;margin-top:2px;color:var(--ink-3);font-size:12px}
+.reset-button{height:32px;border:1px solid var(--line-strong);border-radius:3px;background:var(--surface);color:var(--ink-2);font:inherit;font-weight:700;padding:0 12px;cursor:pointer}
+.reset-button:hover{background:var(--surface-hover);color:var(--ink)}
+.dca-controls{display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:12px;padding:14px 18px;border-bottom:1px solid var(--hairline)}
+.dca-controls label{display:grid;gap:6px;color:var(--ink-2);font-weight:700}
+.dca-controls input{width:100%;height:36px;border:1px solid var(--line-strong);border-radius:3px;background:var(--surface);color:var(--ink);font:inherit;font-variant-numeric:tabular-nums;padding:0 10px;outline:none}
+.dca-controls input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(78,175,195,.14)}
+.suffix-input{position:relative}
+.suffix-input input{padding-right:30px}
+.suffix-input span{position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-weight:700}
+.dca-table-wrap{position:relative;overflow:auto}
+.dca-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.dca-table th{background:var(--surface-3);color:var(--ink-2);text-align:right;padding:10px 16px;border-bottom:1px solid var(--line-strong)}
+.dca-table th:first-child,.dca-table td:first-child{text-align:left}
+.dca-table td{text-align:right;padding:9px 16px;border-bottom:1px solid var(--hairline)}
+.dca-table tbody tr:hover{background:var(--surface-hover)}
+.dca-empty{padding:18px;color:var(--ink-3);font-size:13px}
 
 .loading{padding:60px 0;text-align:center;color:var(--ink-3)}
 .error{padding:40px 0;text-align:center;color:var(--ink-2)}
@@ -196,11 +216,12 @@ a{color:inherit;text-decoration:none}
   .instrument-title{display:block}.instrument-title strong{font-size:20px;display:block}.instrument-title span{font-size:11px}
   .market-quote{display:block;text-align:left}.market-quote strong{font-size:20px;display:block}.market-quote span{font-size:12px}
   .analysis-card,.table-card{margin:10px 8px 0}
+  .dca-card{margin:10px 8px 0}
+  .dca-heading{padding:12px}
+  .dca-controls{grid-template-columns:1fr;padding:12px}
   .stats-pane{padding:14px 12px}.stats{display:block}
   .chart-pane{padding:12px 4px 2px}.chart-heading{align-items:flex-start}.chart-heading>div{display:block}
   #coverageBadge{display:inline-block;margin-top:4px}
   .source-note{max-width:110px;text-align:right}
   #chart{height:380px}
-  .bar{width:140px}
-  .pct-badge{display:flex;flex-wrap:wrap}
 }
