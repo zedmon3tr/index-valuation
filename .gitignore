@@ -14,9 +14,8 @@ __pycache__/
 # 理杏仁 lixinger 私有 token（仅本地，绝不提交）——backfill_lixinger.py 读取
 scripts/.lixinger_token.json
 
-# 只上传网站运行必需文件——以下调研/测试/探针/项目描述文件仅本地保留，不上传：
+# 仅本地保留、不上传：调研/测试/探针/AI 指引文件（README 保留上传）。
 CLAUDE.md
-README.md
 docs/
 tests/
 xueqiu_index_validation/
