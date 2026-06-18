@@ -470,7 +470,7 @@ def main():
 
     # 清理：删掉已不在清单里的旧数据文件，保持 data/ 与 indexes.json 同步。
     # funds_nav.json 是基金净值快照（scripts/fetch_fund_nav.py 维护），不在指数清单里，须保留。
-    keep = {it["code"] for it in INDEXES} | {"funds_nav"}
+    keep = {it["code"] for it in INDEXES} | {"funds_nav", "funds_nav_hist"}
     for fn in os.listdir(OUT):
         if fn.endswith(".json") and fn[:-5] not in keep:
             os.remove(os.path.join(OUT, fn))
