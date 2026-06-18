@@ -118,4 +118,52 @@ function approxEqual(actual, expected, message) {
   assert.deepStrictEqual(Core.movingAverage([1, null, 3, 4], 2), [null, null, null, 3.5], "窗口含 null 置空");
 }
 
+/* ---------- calculateTracking ---------- */
+{
+  // 构造 8 个交易日，基金与指数收益率完全一致 → 跟踪误差≈0、偏离≈0
+  const dates = ["2025-06-02","2025-06-03","2025-06-04","2025-06-05","2025-06-06","2025-06-09","2025-06-10","2025-06-11"];
+  const idx  = [100, 101, 102, 101, 103, 104, 103, 105];
+  const fund = idx.map((v) => v / 50); // 恒定缩放：每日收益率与指数完全相同
+  const r = Core.calculateTracking(dates, fund, dates, idx, { now: "2025-06-11", years: 5 });
+  assert.ok(r, "完全同步应返回对象");
+  approxEqual(r.annualizedTE, 0, "同步收益率年化跟踪误差≈0");
+  approxEqual(r.deviation, 0, "同步累计偏离≈0");
+  assert.strictEqual(r.n, 7, "8 点 → 7 个日收益率差");
+}
+{
+  // 基金每日比指数多涨/少涨制造波动 → 跟踪误差 > 0
+  const dates = ["2025-06-02","2025-06-03","2025-06-04","2025-06-05"];
+  const idx  = [100, 110, 121, 133.1];          // 每日 +10%
+  const fund = [1.0, 1.0, 1.21, 1.21];          // 收益率 0%,0%,+21%,0% → 与指数差异大
+  const r = Core.calculateTracking(dates, fund, dates, idx, { now: "2025-06-05", years: 5 });
+  assert.ok(r.annualizedTE > 0, "不同步应有正跟踪误差");
+}
+{
+  // 日期部分错位：只取交集
+  const fundDates = ["2025-06-02","2025-06-03","2025-06-04","2025-06-05"];
+  const fundNav   = [1, 1.01, 1.02, 1.03];
+  const idxDates  = ["2025-06-03","2025-06-04","2025-06-05","2025-06-06"];
+  const idxClose  = [200, 202, 204, 206];
+  const r = Core.calculateTracking(fundDates, fundNav, idxDates, idxClose, { now: "2025-06-06", years: 5 });
+  assert.strictEqual(r.n, 2, "交集 3 个交易日 → 2 个日收益率差");
+}
+{
+  // 含 null / NaN / 0：剔除非法点，不产生 NaN
+  const dates = ["2025-06-02","2025-06-03","2025-06-04","2025-06-05"];
+  const r = Core.calculateTracking(dates, [1, null, 1.02, 1.03], dates, [100, 101, NaN, 103], { now: "2025-06-05", years: 5 });
+  assert.ok(r === null || Number.isFinite(r.annualizedTE), "含非法值不得产生 NaN");
+}
+{
+  // 不足 2 个交集点 → null
+  assert.strictEqual(Core.calculateTracking(["2025-06-02"], [1], ["2025-06-02"], [100], { now: "2025-06-02", years: 5 }), null, "单点 → null");
+  assert.strictEqual(Core.calculateTracking([], [], [], [], {}), null, "空序列 → null");
+  assert.strictEqual(Core.calculateTracking(undefined, undefined, undefined, undefined, {}), null, "undefined 入参 → null");
+}
+{
+  // years 窗口早于数据范围 → 用可得最早点，仍有限
+  const dates = ["2025-06-02","2025-06-03","2025-06-04"];
+  const r = Core.calculateTracking(dates, [1, 1.01, 1.02], dates, [100, 101, 102], { now: "2025-06-04", years: 10 });
+  assert.ok(r && Number.isFinite(r.annualizedTE), "窗口过大仍返回有限值");
+}
+
 console.log("valuation-core tests passed");

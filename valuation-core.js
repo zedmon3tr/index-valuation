@@ -145,5 +145,58 @@
     });
   }
 
-  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignPrevious, hasSeries, calculateDcaLevels };
+  const ANNUAL_FACTOR = 242; // A股年均交易日，用于跟踪误差年化
+
+  // 基金净值序列与指数 close 序列对齐后，计算近 years 年的年化跟踪误差与累计偏离。
+  // 任何数据不足（交集<2、全空）一律返回 null，绝不抛错或产生 NaN。
+  function calculateTracking(fundDates, fundNav, indexDates, indexClose, options) {
+    const opts = options || {};
+    const years = opts.years != null ? Number(opts.years) : 1;
+    if (!Array.isArray(fundDates) || !Array.isArray(fundNav) || !Array.isArray(indexDates) || !Array.isArray(indexClose)) return null;
+
+    const fundMap = new Map();
+    fundDates.forEach((d, i) => {
+      const v = Number(fundNav[i]);
+      if (d && fundNav[i] != null && Number.isFinite(v) && v > 0) fundMap.set(d, v);
+    });
+    const pairs = [];
+    indexDates.forEach((d, i) => {
+      const c = Number(indexClose[i]);
+      if (d && indexClose[i] != null && Number.isFinite(c) && c > 0 && fundMap.has(d)) {
+        pairs.push({ date: d, fund: fundMap.get(d), index: c });
+      }
+    });
+    pairs.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    if (pairs.length < 2) return null;
+
+    // 近 years 年窗口；窗口起点早于数据范围则自然退化为全部可得点
+    const now = new Date(opts.now || Date.now());
+    const startDate = new Date(now.getTime() - years * 365 * 86400000).toISOString().slice(0, 10);
+    let windowed = pairs.filter((p) => p.date >= startDate);
+    if (windowed.length < 2) windowed = pairs; // 数据比窗口短，用全部
+    if (windowed.length < 2) return null;
+
+    const diffs = [];
+    for (let i = 1; i < windowed.length; i++) {
+      const rFund = windowed[i].fund / windowed[i - 1].fund - 1;
+      const rIndex = windowed[i].index / windowed[i - 1].index - 1;
+      const d = rFund - rIndex;
+      if (Number.isFinite(d)) diffs.push(d);
+    }
+    if (diffs.length < 2) return null;
+
+    const mean = diffs.reduce((s, v) => s + v, 0) / diffs.length;
+    const variance = diffs.reduce((s, v) => s + (v - mean) ** 2, 0) / (diffs.length - 1); // 样本方差 n-1
+    const annualizedTE = Math.sqrt(variance) * Math.sqrt(ANNUAL_FACTOR);
+
+    const first = windowed[0], last = windowed[windowed.length - 1];
+    const fundReturn = last.fund / first.fund - 1;
+    const indexReturn = last.index / first.index - 1;
+    const deviation = fundReturn - indexReturn;
+    if (![annualizedTE, fundReturn, indexReturn, deviation].every(Number.isFinite)) return null;
+
+    return { annualizedTE, deviation, fundReturn, indexReturn, n: diffs.length };
+  }
+
+  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignPrevious, hasSeries, calculateDcaLevels, calculateTracking };
 });
