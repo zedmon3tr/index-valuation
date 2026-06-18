@@ -469,14 +469,13 @@ def main():
         print(f"  已保存 {path}")
 
     # 清理：删掉已不在清单里的旧数据文件，保持 data/ 与 indexes.json 同步。
-    keep = {it["code"] for it in INDEXES} | {"_index"}
+    # funds_nav.json 是基金净值快照（scripts/fetch_fund_nav.py 维护），不在指数清单里，须保留。
+    keep = {it["code"] for it in INDEXES} | {"funds_nav"}
     for fn in os.listdir(OUT):
         if fn.endswith(".json") and fn[:-5] not in keep:
             os.remove(os.path.join(OUT, fn))
             print(f"  清理过期文件 {fn}")
 
-    with open(os.path.join(OUT, "_index.json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False)
     print(f"完成，共生成 {len(meta)} 个指数的估值数据。")
     if not meta:
         # 一个都没成功通常说明数据源临时不可用，让 Actions 标红以便察觉

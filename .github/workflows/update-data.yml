@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write              # 允许把生成的 data/ 提交回仓库
 
+# 定时与手动触发、或运行期间 main 有新提交时，串行执行避免 push 撞车（非快进被拒）。
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,6 +34,9 @@ jobs:
       - name: Build valuation JSON
         run: python scripts/build_data.py
 
+      - name: Fetch fund NAV snapshot
+        run: python scripts/fetch_fund_nav.py   # 纯 stdlib，无需额外依赖
+
       - name: Commit and push if changed
         run: |
           git config user.name  "github-actions[bot]"
@@ -37,6 +45,8 @@ jobs:
           if git diff --quiet --staged; then
             echo "数据无变化，无需提交。"
           else
-            git commit -m "chore: 更新指数估值数据"
+            git commit -m "chore: 更新指数估值与基金净值数据"
+            # main 可能在本次运行期间已有新提交，先 rebase 再 push，避免非快进被拒。
+            git pull --rebase origin main
             git push
           fi

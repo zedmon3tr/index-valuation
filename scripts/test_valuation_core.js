@@ -5,6 +5,7 @@ function approxEqual(actual, expected, message) {
   assert.ok(Math.abs(actual - expected) < 0.000001, `${message}: expected ${expected}, got ${actual}`);
 }
 
+/* ---------- calculateDcaLevels ---------- */
 {
   const levels = Core.calculateDcaLevels({ initialPrice: 1, count: 3, dropPct: 4 });
   assert.strictEqual(levels.length, 3);
@@ -14,24 +15,107 @@ function approxEqual(actual, expected, message) {
   approxEqual(levels[2].price, 0.9216, "third level compounds from previous level");
   approxEqual(levels[2].dropFromInitialPct, 7.84, "drop from initial is cumulative");
 }
-
 {
   const levels = Core.calculateDcaLevels({ initialPrice: 3000, count: 2, dropPct: 5 });
-  assert.deepStrictEqual(
-    levels.map((level) => level.price),
-    [3000, 2850]
-  );
+  assert.deepStrictEqual(levels.map((level) => level.price), [3000, 2850]);
 }
-
 {
   const levels = Core.calculateDcaLevels({ initialPrice: 100, count: 1000, dropPct: 4 });
   assert.strictEqual(levels.length, 60);
 }
-
 {
   assert.deepStrictEqual(Core.calculateDcaLevels({ initialPrice: "", count: 10, dropPct: 4 }), []);
   assert.deepStrictEqual(Core.calculateDcaLevels({ initialPrice: 100, count: 0, dropPct: 4 }), []);
   assert.deepStrictEqual(Core.calculateDcaLevels({ initialPrice: 100, count: 10, dropPct: 100 }), []);
+  // 数字或 null 都应安全（详情页定投 state 现统一存数字/null）
+  assert.deepStrictEqual(Core.calculateDcaLevels({ initialPrice: null, count: 10, dropPct: 4 }), []);
+  assert.deepStrictEqual(Core.calculateDcaLevels({ initialPrice: 100, count: null, dropPct: 4 }), []);
+}
+
+/* ---------- analyze ---------- */
+{
+  const s = Core.analyze([5, 4, 3, 2, 1]); // current = 最后一个 = 1（最小）
+  approxEqual(s.current, 1, "current 取输入末值，而非排序后");
+  approxEqual(s.min, 1, "min");
+  approxEqual(s.max, 5, "max");
+  approxEqual(s.median, 3, "median = quantile 0.5");
+  approxEqual(s.mean, 3, "mean");
+  approxEqual(s.percentile, 10, "mid-rank：(0 + 1/2)/5 = 10%");
+}
+{
+  // 并列值：mid-rank 不再把等于当前值的样本全算进“低于”
+  const s = Core.analyze([10, 10, 10, 20, 20]); // current = 20
+  approxEqual(s.percentile, 80, "mid-rank 并列：(3 + 2/2)/5 = 80%（旧 `<=` 会得 100%）");
+}
+{
+  assert.strictEqual(Core.analyze([]), null, "空序列返回 null");
+  const s = Core.analyze([null, 7, NaN, 7]); // 过滤非有限值后 [7,7]，current=7
+  approxEqual(s.percentile, 50, "全相等：(0 + 2/2)/2 = 50%");
+  approxEqual(s.std, 0, "全相等标准差为 0");
+  approxEqual(s.z, 0, "std=0 时 z 兜底为 0");
+}
+
+/* ---------- quantile ---------- */
+{
+  approxEqual(Core.quantile([1, 2, 3, 4, 5], 0.5), 3, "奇数个取中位");
+  approxEqual(Core.quantile([1, 2, 3, 4], 0.5), 2.5, "偶数个线性插值");
+  approxEqual(Core.quantile([1, 2, 3, 4, 5], 0.2), 1.8, "20 分位插值");
+  assert.strictEqual(Core.quantile([], 0.5), null, "空数组返回 null");
+}
+
+/* ---------- sliceByRange ---------- */
+{
+  const dates = ["2020-01-01", "2021-01-01", "2022-01-01"];
+  const values = [1, 2, 3];
+  const all = Core.sliceByRange(dates, values, { range: "ALL" });
+  assert.deepStrictEqual(all.dates, dates, "ALL 保留全部");
+  const custom = Core.sliceByRange(dates, values, { range: "CUSTOM", customStart: "2020-06-01", customEnd: "2021-06-01" });
+  assert.deepStrictEqual(custom.dates, ["2021-01-01"], "CUSTOM 区间过滤");
+  assert.deepStrictEqual(custom.values, [2], "CUSTOM 值跟随");
+  const withNull = Core.sliceByRange(["2020-01-01", "2020-01-02"], [null, 5], { range: "ALL" });
+  assert.deepStrictEqual(withNull.values, [5], "null 值被剔除");
+}
+{
+  // 相对区间按 now 截断
+  const dates = ["2024-01-01", "2025-06-01", "2026-06-01"];
+  const values = [1, 2, 3];
+  // now-365d = 2025-06-18，故 2025-06-01 落在窗口外，仅 2026-06-01 入选
+  const oneY = Core.sliceByRange(dates, values, { range: "1Y", now: "2026-06-18" });
+  assert.deepStrictEqual(oneY.dates, ["2026-06-01"], "1Y 截近一年（365 天）");
+}
+
+/* ---------- resampleSeries ---------- */
+{
+  const day = Core.resampleSeries(["2021-01-01"], [1], "D");
+  assert.deepStrictEqual(day.values, [1], "D 周期原样返回");
+  const monthly = Core.resampleSeries(
+    ["2021-01-05", "2021-01-20", "2021-02-10"], [1, 2, 3], "M"
+  );
+  assert.deepStrictEqual(monthly.dates, ["2021-01-20", "2021-02-10"], "月内取最晚交易日");
+  assert.deepStrictEqual(monthly.values, [2, 3], "月内取该日的值");
+  // 乱序输入也应得到同样（升序）结果——#9 排序契约
+  const unordered = Core.resampleSeries(
+    ["2021-02-10", "2021-01-20", "2021-01-05"], [3, 2, 1], "M"
+  );
+  assert.deepStrictEqual(unordered.dates, ["2021-01-20", "2021-02-10"], "乱序输入排序后分桶");
+  assert.deepStrictEqual(unordered.values, [2, 3], "乱序输入取值正确");
+}
+
+/* ---------- alignPrevious ---------- */
+{
+  const out = Core.alignPrevious(
+    ["2020-12-31", "2021-01-01", "2021-01-02", "2021-01-03"],
+    ["2021-01-01", "2021-01-03"],
+    [10, 30]
+  );
+  assert.deepStrictEqual(out, [null, 10, 10, 30], "首个源日期前为 null，其后前向填充");
+}
+
+/* ---------- movingAverage ---------- */
+{
+  assert.deepStrictEqual(Core.movingAverage([1, 2, 3, 4], 2), [null, 1.5, 2.5, 3.5], "窗口 2");
+  assert.deepStrictEqual(Core.movingAverage([1, 2, 3], 1), [1, 2, 3], "窗口<=1 原样");
+  assert.deepStrictEqual(Core.movingAverage([1, null, 3, 4], 2), [null, null, null, 3.5], "窗口含 null 置空");
 }
 
 console.log("valuation-core tests passed");
