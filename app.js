@@ -43,7 +43,7 @@ async function loadIndexes() {
 }
 
 /* ---------- 2. JSONP 工具 ---------- */
-function jsonp(url, cbParam = "cb", timeout = 12000) {
+function jsonp(url, cbParam = "cb", timeout = 8000) {
   return new Promise((resolve, reject) => {
     const name = "__jp" + Math.random().toString(36).slice(2);
     const sep = url.includes("?") ? "&" : "?";
@@ -260,29 +260,56 @@ const dcaState = {
 };
 const DCA_MAX_COUNT = 60;
 
+// 顶部实时行情区的 HTML。quote 有值显示价格；为空时按是否仍在加载显示「加载中」或「不可用」。
+function marketQuoteHTML(quote, pending) {
+  if (quote) {
+    return `<strong class="${cls(quote.pct)}">${fmt(quote.price)}</strong>
+          <span class="${cls(quote.pct)}">${fmtPct(quote.pct)}  ${(quote.chg >= 0 ? "+" : "") + fmt(quote.chg)}</span>`;
+  }
+  return `<span class="quote-pending">${pending ? "实时行情加载中…" : "行情快照暂不可用"}</span>`;
+}
+function updateMarketQuote(quote) {
+  const el = document.getElementById("marketQuote");
+  if (el) el.innerHTML = marketQuoteHTML(quote, false);
+}
+
 async function renderDetail(secid) {
+  const reqHash = location.hash;
   const known = POPULAR.find((p) => p.secid === secid);
   const fund = FUNDS.find((f) => f.secid === secid);
   view.innerHTML = `<div class="loading">加载中…</div>`;
-  // 行情（东方财富）与历史 K 线都可能失败：都不致命，逐一降级。
-  let quote = null, kdata = null;
-  [quote, kdata] = await Promise.all([
+
+  // 实时行情 + K 线（push2，可能很慢甚至失败）：后台拉取，绝不阻塞首屏渲染。
+  const livePromise = Promise.all([
     EM.quote(secid).catch(() => null),
     EM.kline(secid).catch(() => null),
   ]);
-  const name = (quote && quote.name) || (kdata && kdata.name) || (fund && fund.name) || (known && known.name) || secid;
+
+  // 估值 / 历史点位（本地静态 JSON，快且稳）：先加载它来渲染首屏。
+  // 基金借用跟踪指数的估值数据；已知标的无需实时行情即可解析估值 code。
+  const val = await loadValuation(secid_to_code(secid, null));
+  if (location.hash !== reqHash) return;
+  const localName = (fund && fund.name) || (known && known.name);
+  const hasVal = !!(val && (Core.hasSeries(val.pe) || Core.hasSeries(val.pb) || Core.hasSeries(val.dy)));
+  const hasLocalData = hasVal || !!(val && Core.hasSeries(val.close));
+
+  // 已知标的或本地有数据 → 立即渲染，实时行情后台补；
+  // 否则（未知 secid 且无本地数据）只能等实时接口才知道有没有数据。
+  let quote = null, kdata = null;
+  const renderedFromLocal = hasLocalData || !!localName;
+  if (!renderedFromLocal) {
+    [quote, kdata] = await livePromise;
+    if (location.hash !== reqHash) return;
+  }
+
+  const name = (quote && quote.name) || (kdata && kdata.name) || localName || secid;
   // 展示用 code 取标的自身（基金显示自己的代码）；估值用 code 走 secid_to_code（基金→跟踪指数）。
   const code = (quote && quote.code) || (fund && fund.code) || (known && known.code) || secid.split(".")[1];
   const trackName = fund ? ((POPULAR.find((p) => p.code === fund.trackIndex) || {}).name || fund.trackIndex) : "";
-
-  // 历史点位优先用 CI 预生成的静态 close（多源兜底），实时 kline 仅作补充。
-  // 基金借用跟踪指数的估值数据，故用 secid_to_code 解析（基金→trackIndex）。
-  const val = await loadValuation(secid_to_code(secid, quote));
   klineCache[secid] = kdata && kdata.rows && kdata.rows.length ? kdata : { rows: [] };
   const hasPoint = !!(val && Core.hasSeries(val.close)) || klineCache[secid].rows.length > 0;
-  const hasVal = !!(val && (Core.hasSeries(val.pe) || Core.hasSeries(val.pb) || Core.hasSeries(val.dy)));
   if (!hasPoint && !hasVal) {
-    view.innerHTML = `<div class="error">未找到该指数的历史数据，且实时行情接口暂时不可用，请稍后重试。<br><a class="back" href="#/">返回首页</a></div>`;
+    view.innerHTML = `<div class="error">未找到该标的的历史数据，且实时行情接口暂时不可用，请稍后重试。<br><a class="back" href="#/">返回首页</a></div>`;
     return;
   }
   // 优先默认显示估值指标（点位会作为叠加线始终展示）；仅有点位数据的指数才默认点位。
@@ -334,10 +361,7 @@ async function renderDetail(secid) {
           <a class="back" href="#/">‹ 返回${fund ? "首页" : "指数列表"}</a>
           <div class="instrument-title"><strong>${name}</strong><span>${code} · ${secid}</span></div>
         </div>
-        <div class="market-quote">
-          <strong class="${cls(quote && quote.pct)}">${fmt(quote && quote.price)}</strong>
-          <span class="${cls(quote && quote.pct)}">${quote ? fmtPct(quote.pct) + "  " + (quote.chg >= 0 ? "+" : "") + fmt(quote.chg) : "行情快照暂不可用"}</span>
-        </div>
+        <div class="market-quote" id="marketQuote">${marketQuoteHTML(quote, renderedFromLocal)}</div>
       </div>
 
       <div class="analysis-card" id="statsView">
@@ -400,8 +424,18 @@ async function renderDetail(secid) {
   buildMetricTabs(secid, quote, val);
   // 进入详情页才按需加载 echarts；失败不致命，renderChart 会降级，统计/明细照常可用。
   await loadECharts().catch(() => {});
+  if (location.hash !== reqHash) return;
   drawDetail(secid, quote);
   window.onresize = () => chart && chart.resize();
+
+  // 首屏已用本地数据渲染完成；实时行情/K线到了再补价格与最新点位，不让它拖慢页面。
+  if (renderedFromLocal) {
+    livePromise.then(([q, k]) => {
+      if (location.hash !== reqHash) return;
+      updateMarketQuote(q);
+      if (k && k.rows && k.rows.length) { klineCache[secid] = k; drawDetail(secid, q); }
+    });
+  }
 }
 
 function bindDetailControls(secid, quote) {
