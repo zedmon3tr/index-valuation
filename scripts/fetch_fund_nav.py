@@ -40,7 +40,8 @@ def _get(url, referer=None, timeout=10, retries=3):
                 return resp.read().decode("utf-8", "replace")
         except Exception as e:  # noqa: BLE001
             last = e
-            time.sleep(0.5 * (attempt + 1))
+            if attempt < retries - 1:
+                time.sleep(0.5 * (attempt + 1))
     raise last
 
 

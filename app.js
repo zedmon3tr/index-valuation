@@ -478,7 +478,7 @@ async function renderDetail(secid) {
   // 基金详情页：渲染跟踪关联卡片（本地数据先点亮，实时点位后台补）
   // 先把卡片骨架渲染出来（含 #trackPoint / #trackPremium），再后台补实时点位与溢价率，
   // 避免 refresh* 在卡片 DOM 就位前查不到元素。
-  if (fund) renderTrackingCard(fund, val).then(() => { refreshTrackPoint(fund); refreshPremium(fund); });
+  if (fund) renderTrackingCard(fund, val, reqHash).then(() => { refreshTrackPoint(fund, reqHash); refreshPremium(fund, reqHash); });
 
   // 首屏已用本地数据渲染完成；实时行情/K线到了再补价格与最新点位，不让它拖慢页面。
   if (renderedFromLocal) {
@@ -732,7 +732,7 @@ function valuationVerdict(stats) {
 }
 
 // 渲染基金「跟踪关联」卡片。val=已加载的指数估值；fund=funds.json 条目。
-async function renderTrackingCard(fund, val) {
+async function renderTrackingCard(fund, val, reqHash) {
   const box = document.getElementById("trackingCard");
   if (!box || !fund) return;
   const idxObj = POPULAR.find((p) => p.code === fund.trackIndex);
@@ -784,6 +784,8 @@ async function renderTrackingCard(fund, val) {
     ? `<span id="trackPoint">${fmt(lastClose)} <span class="point-tag">快照</span></span>`
     : `<span id="trackPoint" class="tk-muted">—</span>`;
 
+  // 上面 await 期间用户可能已切到别的标的；与 renderDetail 同款守卫，避免把本卡片写进别人页面
+  if (reqHash && location.hash !== reqHash) return;
   box.innerHTML = `
     <div class="tracking-title">跟踪关联</div>
     <div class="tracking-grid">
@@ -811,11 +813,12 @@ async function renderTrackingCard(fund, val) {
 }
 
 // 指数实时点位后台补：行情到了就更新 #trackPoint，覆盖静态快照值。
-async function refreshTrackPoint(fund) {
+async function refreshTrackPoint(fund, reqHash) {
   if (!fund) return;
   const idxObj = POPULAR.find((p) => p.code === fund.trackIndex);
   if (!idxObj) return;
   const q = await EM.quote(idxObj.secid).catch(() => null);
+  if (reqHash && location.hash !== reqHash) return;   // 行情回来时已切页 → 不写旧数据
   const el = document.getElementById("trackPoint");
   if (!el || !q || q.price == null) return;
   el.className = cls(q.pct);
@@ -824,13 +827,15 @@ async function refreshTrackPoint(fund) {
 
 // 溢价率后台补：基金实时市价(EM.quote 自身 secid) vs 盘中估值(IOPV≈快照 estimate)。
 // (市价 - IOPV)/IOPV 才是真·溢价/折价率；缺市价或缺 IOPV 则保持置灰。
-async function refreshPremium(fund) {
+async function refreshPremium(fund, reqHash) {
   if (!fund) return;
   const snap = await loadFundNav();
+  if (reqHash && location.hash !== reqHash) return;
   const s = snap && snap[fund.code];
   const el = document.getElementById("trackPremium");
   if (!el || !s || s.estimate == null) return;          // 无 IOPV，保持「暂不可用」
   const q = await EM.quote(fund.secid).catch(() => null);
+  if (reqHash && location.hash !== reqHash) return;
   if (!q || q.price == null) { el.textContent = "—"; el.className = "tk-muted"; return; }
   const prem = (q.price - s.estimate) / s.estimate * 100;
   el.className = prem > 0 ? "up" : prem < 0 ? "down" : "flat";
