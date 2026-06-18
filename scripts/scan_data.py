@@ -119,7 +119,7 @@ def main():
             check_series_file(code, p)
 
     # 孤儿数据文件
-    for orphan in sorted(data_files - idx_codes - {"funds_nav"}):
+    for orphan in sorted(data_files - idx_codes - {"funds_nav", "funds_nav_hist"}):
         warn(f"[data] 孤儿文件 data/{orphan}.json（不在 indexes.json）")
 
     # 基金 trackIndex 必须指向已存在且有数据的指数
@@ -156,6 +156,22 @@ def main():
                     warn(f"[nav] {f['code']} 净值偏旧：{nd}（距今 {gap} 天）")
             except (ValueError, TypeError):
                 err(f"[nav] {f['code']} navDate 异常：{nd!r}")
+
+    histp = os.path.join(DATA, "funds_nav_hist.json")
+    if not os.path.exists(histp):
+        warn("[nav-hist] 缺 data/funds_nav_hist.json（跑 fetch_fund_nav.py 生成，跟踪误差将置灰）")
+    else:
+        hist = json.load(open(histp, encoding="utf-8"))
+        hist_codes = {f["code"] for f in hist.get("funds", [])}
+        for f in funds:  # funds 为已加载的 funds.json 列表
+            if f["code"] not in hist_codes:
+                warn(f"[nav-hist] {f['code']} 未出现在 funds_nav_hist.json")
+        for f in hist.get("funds", []):
+            d, n = f.get("navDates") or [], f.get("nav") or []
+            if len(d) != len(n):
+                err(f"[nav-hist] {f['code']} navDates/nav 长度不一致 {len(d)}≠{len(n)}")
+            if d != sorted(d):
+                err(f"[nav-hist] {f['code']} navDates 非升序")
 
     print(f"扫描完成：{len(idx_codes)} 指数 / {len(funds)} 基金")
     print(f"  错误 {len(errors)}　警告 {len(warns)}")

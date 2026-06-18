@@ -29,12 +29,20 @@ LSJZ_URL = ("https://api.fund.eastmoney.com/f10/lsjz"
             "?fundCode={code}&pageIndex=1&pageSize=1")
 
 
-def _get(url, referer=None, timeout=10):
+def _get(url, referer=None, timeout=10, retries=3):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     if referer:
         req.add_header("Referer", referer)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", "replace")
+    last = None
+    for attempt in range(retries):  # 东财偶发 SSL 握手超时；重试避免单次抖动丢整只基金
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if attempt < retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+    raise last
 
 
 def _round3(x):
@@ -63,6 +71,41 @@ def fetch_lsjz(code):
     if not rows:
         return None, None
     return rows[0].get("DWJZ"), rows[0].get("FSRQ")
+
+
+HIST_OUT = os.path.join(ROOT, "data", "funds_nav_hist.json")
+LSJZ_PAGE_URL = ("https://api.fund.eastmoney.com/f10/lsjz"
+                 "?fundCode={code}&pageIndex={page}&pageSize=20")
+HIST_YEARS = 3   # 近 ~3 年日频单位净值，足够算年化跟踪误差并留窗口余量
+_LSJZ_PAGE_SIZE = 20  # 东财 f10-lsjz 实际每页上限（pageSize 参数无效，固定返回 20 条）
+
+
+def fetch_lsjz_history(code, years=HIST_YEARS):
+    """f10 历史净值分页拉取近 years 年单位净值。返回 (navDates 升序, nav 浮点) 或 ([], [])。"""
+    import datetime
+    cutoff = (datetime.date.today() - datetime.timedelta(days=years * 365)).isoformat()
+    dates, navs = [], []
+    for page in range(1, 200):  # 20/页 × 200 = 4000 交易日上限，封顶防失控
+        raw = _get(LSJZ_PAGE_URL.format(code=code, page=page),
+                   referer="https://fundf10.eastmoney.com/")
+        rows = (json.loads(raw).get("Data") or {}).get("LSJZList") or []
+        if not rows:
+            break
+        stop = False
+        for r in rows:
+            fsrq, dwjz = r.get("FSRQ"), r.get("DWJZ")
+            if not fsrq or fsrq < cutoff:
+                stop = True
+                continue
+            try:
+                navs.append(float(dwjz)); dates.append(fsrq)
+            except (TypeError, ValueError):
+                pass
+        if stop or len(rows) < _LSJZ_PAGE_SIZE:
+            break
+        time.sleep(0.2)
+    order = sorted(range(len(dates)), key=lambda i: dates[i])  # 接口降序 → 升序
+    return [dates[i] for i in order], [navs[i] for i in order]
 
 
 def main():
@@ -117,6 +160,40 @@ def main():
     with open(OUT, "w", encoding="utf-8") as fp:
         json.dump(payload, fp, ensure_ascii=False, indent=2)
     print(f"\n写入 {OUT}：{ok} 成功 / {miss} 失败 / 共 {len(out)}")
+
+    hist = []
+    h_ok = h_miss = 0
+    for f in funds:
+        code = f["code"]
+        rec = {"code": code, "name": f.get("name"), "secid": f.get("secid"),
+               "trackIndex": f.get("trackIndex"), "navDates": [], "nav": []}
+        try:
+            d, n = fetch_lsjz_history(code)
+            rec["navDates"], rec["nav"] = d, n
+        except Exception as e:  # noqa: BLE001
+            print(f"  {code} 历史净值抓取失败：{type(e).__name__}: {e}")
+        if rec["nav"]:
+            h_ok += 1
+            print(f"  {code} {rec['name']:22} 历史 {len(rec['nav'])} 点 {rec['navDates'][0]}~{rec['navDates'][-1]}")
+        else:
+            h_miss += 1
+        hist.append(rec)
+        time.sleep(0.25)
+
+    hist_payload = {
+        "generatedAt": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        "source": "东方财富天天基金 f10-lsjz",
+        "note": "每只基金近 ~3 年日频单位净值，前端用于计算跟踪误差",
+        "count": len(hist),
+        "funds": hist,
+    }
+    # 整体全失败时不覆盖既有文件（沿用快照脚本"失败不写空"精神）
+    if h_ok > 0 or not os.path.exists(HIST_OUT):
+        with open(HIST_OUT, "w", encoding="utf-8") as fp:
+            json.dump(hist_payload, fp, ensure_ascii=False, indent=2)
+        print(f"写入 {HIST_OUT}：{h_ok} 成功 / {h_miss} 失败 / 共 {len(hist)}")
+    else:
+        print(f"⚠ 历史净值全部抓取失败，保留既有 {HIST_OUT}")
 
 
 if __name__ == "__main__":
