@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-18 00:47:35",
+  "generatedAt": "2026-06-18 12:51:50",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -12,9 +12,9 @@
       "nav": 4.958,
       "navRaw": "4.9582",
       "navDate": "2026-06-17",
-      "estimate": 4.964,
-      "estimateChangePct": "0.12",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 4.969,
+      "estimateChangePct": "0.21",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -25,9 +25,9 @@
       "nav": 3.015,
       "navRaw": "3.0152",
       "navDate": "2026-06-17",
-      "estimate": 3.017,
-      "estimateChangePct": "0.06",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 3.01,
+      "estimateChangePct": "-0.19",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -38,9 +38,9 @@
       "nav": 1.94,
       "navRaw": "1.9403",
       "navDate": "2026-06-17",
-      "estimate": 2.01,
-      "estimateChangePct": "3.60",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 2.015,
+      "estimateChangePct": "3.84",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -51,9 +51,9 @@
       "nav": 4.18,
       "navRaw": "4.1801",
       "navDate": "2026-06-17",
-      "estimate": 4.238,
-      "estimateChangePct": "1.39",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 4.266,
+      "estimateChangePct": "2.05",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -64,9 +64,9 @@
       "nav": 8.76,
       "navRaw": "8.7596",
       "navDate": "2026-06-17",
-      "estimate": 8.789,
-      "estimateChangePct": "0.33",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 8.806,
+      "estimateChangePct": "0.53",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -77,9 +77,9 @@
       "nav": 3.515,
       "navRaw": "3.5149",
       "navDate": "2026-06-17",
-      "estimate": 3.53,
-      "estimateChangePct": "0.44",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 3.542,
+      "estimateChangePct": "0.76",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -103,9 +103,9 @@
       "nav": 0.586,
       "navRaw": "0.5864",
       "navDate": "2026-06-17",
-      "estimate": 0.577,
-      "estimateChangePct": "-1.56",
-      "estimateTime": "2026-06-18 11:44",
+      "estimate": 0.579,
+      "estimateChangePct": "-1.32",
+      "estimateTime": "2026-06-18 16:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -116,9 +116,9 @@
       "nav": 5.17,
       "navRaw": "5.1705",
       "navDate": "2026-06-17",
-      "estimate": 5.176,
-      "estimateChangePct": "0.11",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 5.181,
+      "estimateChangePct": "0.21",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -129,9 +129,9 @@
       "nav": 3.157,
       "navRaw": "3.1567",
       "navDate": "2026-06-17",
-      "estimate": 3.099,
-      "estimateChangePct": "-1.83",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 3.082,
+      "estimateChangePct": "-2.36",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -142,9 +142,9 @@
       "nav": 1.515,
       "navRaw": "1.5148",
       "navDate": "2026-06-17",
-      "estimate": 1.488,
-      "estimateChangePct": "-1.77",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 1.482,
+      "estimateChangePct": "-2.16",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -155,9 +155,9 @@
       "nav": 0.414,
       "navRaw": "0.4137",
       "navDate": "2026-06-17",
-      "estimate": 0.405,
-      "estimateChangePct": "-2.03",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 0.403,
+      "estimateChangePct": "-2.56",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -168,9 +168,9 @@
       "nav": 0.293,
       "navRaw": "0.2932",
       "navDate": "2026-06-17",
-      "estimate": 0.297,
-      "estimateChangePct": "1.32",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 0.296,
+      "estimateChangePct": "0.91",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -181,9 +181,9 @@
       "nav": 0.636,
       "navRaw": "0.6359",
       "navDate": "2026-06-17",
-      "estimate": 0.625,
-      "estimateChangePct": "-1.75",
-      "estimateTime": "2026-06-18 11:30",
+      "estimate": 0.621,
+      "estimateChangePct": "-2.30",
+      "estimateTime": "2026-06-18 15:00",
       "source": "eastmoney:fundgz"
     },
     {
