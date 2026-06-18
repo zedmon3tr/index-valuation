@@ -130,6 +130,7 @@ a{color:inherit;text-decoration:none}
 .market-quote{display:flex;align-items:baseline;gap:14px;font-variant-numeric:tabular-nums}
 .market-quote strong{font-size:24px}
 .market-quote span{font-size:15px;font-weight:700}
+.market-quote .quote-pending{font-size:13px;font-weight:500;color:var(--ink-2)}
 
 .analysis-card{display:grid;grid-template-columns:minmax(320px,19%) minmax(0,1fr);margin:14px 20px 0;background:var(--surface);border:1px solid var(--line-2);border-radius:6px;box-shadow:var(--ws-shadow);overflow:hidden}
 .stats-pane{padding:18px 18px 14px;border-right:1px solid var(--line-2)}
