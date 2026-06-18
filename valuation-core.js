@@ -25,10 +25,13 @@
     const current = clean[clean.length - 1];
     const mean = clean.reduce((sum, value) => sum + value, 0) / clean.length;
     const std = Math.sqrt(clean.reduce((sum, value) => sum + (value - mean) ** 2, 0) / clean.length);
-    const below = sorted.filter((value) => value <= current).length;
+    // 分位用 mid-rank（并列值各算半个），避免 `<= current` 把所有等于当前值的样本都计入
+    // “低于”而高估分位，并与下面 quantile(线性插值) 的危险/中位/机会值口径保持自洽。
+    const below = sorted.filter((value) => value < current).length;
+    const equal = sorted.filter((value) => value === current).length;
     return {
       current,
-      percentile: (below / clean.length) * 100,
+      percentile: ((below + equal / 2) / clean.length) * 100,
       danger: quantile(sorted, 0.8),
       median: quantile(sorted, 0.5),
       chance: quantile(sorted, 0.2),
@@ -92,22 +95,15 @@
 
   function resampleSeries(dates, values, period = "D") {
     if (period === "D") return { dates: [...dates], values: [...values] };
+    // 先按日期升序，再分桶——同桶取“最后写入”即该周/月内最晚交易日的值；不依赖入参已有序。
+    const pairs = dates
+      .map((date, index) => ({ date, value: values[index] }))
+      .filter((item) => item.date && item.value != null && Number.isFinite(Number(item.value)))
+      .sort((a, b) => a.date.localeCompare(b.date));
     const buckets = new Map();
-    dates.forEach((date, index) => {
-      const value = values[index];
-      if (!date || value == null || !Number.isFinite(Number(value))) return;
-      buckets.set(periodKey(date, period), { date, value: Number(value) });
-    });
+    pairs.forEach((item) => buckets.set(periodKey(item.date, period), { date: item.date, value: Number(item.value) }));
     const selected = [...buckets.values()];
     return { dates: selected.map((item) => item.date), values: selected.map((item) => item.value) };
-  }
-
-  function alignToDates(targetDates, sourceDates, sourceValues) {
-    const lookup = new Map(sourceDates.map((date, index) => [date, sourceValues[index]]));
-    return targetDates.map((date) => {
-      const value = lookup.get(date);
-      return value == null || !Number.isFinite(Number(value)) ? null : Number(value);
-    });
   }
 
   function alignPrevious(targetDates, sourceDates, sourceValues) {
@@ -149,5 +145,5 @@
     });
   }
 
-  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignToDates, alignPrevious, hasSeries, calculateDcaLevels };
+  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignPrevious, hasSeries, calculateDcaLevels };
 });

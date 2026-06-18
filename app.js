@@ -11,6 +11,9 @@ const Core = window.ValuationCore;
  * 首次进入详情页时注入 <script>，promise 缓存确保全程只加载一次；后续重绘直接复用
  * 已就绪的全局 echarts。注入失败（网络/CDN 不可用）时 reject，详情页据此降级提示。 */
 const ECHARTS_SRC = "https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js";
+// 子资源完整性（SRI，cdnjs 官方发布的 sha512）：CDN 被篡改/投毒时浏览器拒绝执行。
+// crossorigin 必须有，否则跨源脚本无法做完整性校验。
+const ECHARTS_SRI = "sha512-k37wQcV4v2h6jgYf5IUz1MoSKPpDs630XGSmCaCCOXxy2awgAWKHGZWr9nMyGgk3IOxA1NxdkN8r1JHgkUtMoQ==";
 let echartsPromise = null;
 function loadECharts() {
   if (window.echarts) return Promise.resolve(window.echarts);
@@ -18,6 +21,8 @@ function loadECharts() {
   echartsPromise = new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.src = ECHARTS_SRC;
+    s.integrity = ECHARTS_SRI;
+    s.crossOrigin = "anonymous";
     s.async = true;
     s.onload = () => (window.echarts ? resolve(window.echarts) : reject(new Error("echarts 未就绪")));
     s.onerror = () => { echartsPromise = null; s.remove(); reject(new Error("echarts 加载失败")); };
@@ -164,6 +169,10 @@ function router() {
 window.addEventListener("hashchange", router);
 
 /* ---------- 7. 首页 ---------- */
+// 首页行情短 TTL 缓存：详情页 ↔ 首页来回切时，TTL 内复用上次快照，免重复打东财。
+let homeQuoteCache = { ts: 0, q: null };
+const HOME_QUOTE_TTL = 15000;
+
 async function renderHome() {
   // 首页展示主表中 home 开关打开的标的（指数在 indexes.json、基金在 funds.json 逐条配置）
   const homeList = POPULAR.concat(FUNDS).filter((p) => p.home);
@@ -194,7 +203,11 @@ async function renderHome() {
     ${sections}
   `;
   try {
-    const q = await EM.batchQuote(homeList.map((p) => p.secid));
+    let q = homeQuoteCache.q;
+    if (!q || Date.now() - homeQuoteCache.ts > HOME_QUOTE_TTL) {
+      q = await EM.batchQuote(homeList.map((p) => p.secid));
+      homeQuoteCache = { ts: Date.now(), q };
+    }
     homeList.forEach((p) => {
       const el = document.getElementById("c-" + p.secid.replace(".", "_"));
       const d = q[p.secid];
@@ -253,8 +266,10 @@ const detailState = {
   customStart: "",
   customEnd: "",
 };
+// 定投计算器 state：三个字段统一持数字或 null（清空/非法即 null），不存输入框原始字符串，
+// 避免「初始化是数字、sync 后变字符串」的类型漂移（calculateDcaLevels 自身再做校验）。
 const dcaState = {
-  initialPrice: "",
+  initialPrice: null,
   count: 10,
   dropPct: 4,
 };
@@ -262,9 +277,11 @@ const DCA_MAX_COUNT = 60;
 
 // 顶部实时行情区的 HTML。quote 有值显示价格；为空时按是否仍在加载显示「加载中」或「不可用」。
 function marketQuoteHTML(quote, pending) {
-  if (quote) {
+  if (quote && quote.price != null) {
+    // chg 缺失时只显示涨跌幅、不拼出 "—" 脏字符；price 缺失则视作无快照，走下方占位分支。
+    const chg = quote.chg == null ? "" : `  ${quote.chg >= 0 ? "+" : ""}${fmt(quote.chg)}`;
     return `<strong class="${cls(quote.pct)}">${fmt(quote.price)}</strong>
-          <span class="${cls(quote.pct)}">${fmtPct(quote.pct)}  ${(quote.chg >= 0 ? "+" : "") + fmt(quote.chg)}</span>`;
+          <span class="${cls(quote.pct)}">${fmtPct(quote.pct)}${chg}</span>`;
   }
   return `<span class="quote-pending">${pending ? "实时行情加载中…" : "行情快照暂不可用"}</span>`;
 }
@@ -426,6 +443,7 @@ async function renderDetail(secid) {
   await loadECharts().catch(() => {});
   if (location.hash !== reqHash) return;
   drawDetail(secid, quote);
+  // 故意用赋值（单例）而非 addEventListener：每次进详情页覆盖上一个，天然避免反复进出累积监听泄漏。
   window.onresize = () => chart && chart.resize();
 
   // 首屏已用本地数据渲染完成；实时行情/K线到了再补价格与最新点位，不让它拖慢页面。
@@ -478,18 +496,18 @@ function bindDcaCalculator() {
   const dropInput = document.getElementById("dcaDropPct");
   const resetButton = document.getElementById("dcaReset");
   if (!initialInput || !countInput || !dropInput || !resetButton) return;
-  Object.assign(dcaState, { initialPrice: "", count: 10, dropPct: 4 });
+  Object.assign(dcaState, { initialPrice: null, count: 10, dropPct: 4 });
   const normalizeCountInput = () => {
     const count = Math.floor(Number(countInput.value));
-    if (!Number.isFinite(count)) return "";
-    return String(Math.max(1, Math.min(DCA_MAX_COUNT, count)));
+    return Number.isFinite(count) ? Math.max(1, Math.min(DCA_MAX_COUNT, count)) : null;
   };
+  const parseNumber = (raw) => (raw === "" || !Number.isFinite(Number(raw)) ? null : Number(raw));
   const sync = () => {
     const normalizedCount = normalizeCountInput();
-    if (normalizedCount && countInput.value !== normalizedCount) countInput.value = normalizedCount;
-    dcaState.initialPrice = initialInput.value;
+    if (normalizedCount != null && countInput.value !== String(normalizedCount)) countInput.value = String(normalizedCount);
+    dcaState.initialPrice = parseNumber(initialInput.value);
     dcaState.count = normalizedCount;
-    dcaState.dropPct = dropInput.value;
+    dcaState.dropPct = parseNumber(dropInput.value);
     renderDcaRows();
   };
   initialInput.value = "";
@@ -611,13 +629,14 @@ function drawDetail(secid, quote) {
   renderChart(series, pointValues, stats, metric);
 }
 
-// 估值缓存以 code 为键，这里从 secid/quote 推出 code。
-// 基金（ETF）自身无估值数据，统一映射到它跟踪的指数 code（trackIndex），
-// 借用该指数的 data/<code>.json —— 保证 loadValuation 写入键与各处查询键一致。
-function secid_to_code(secid, quote) {
+// 估值缓存以 code 为键，这里仅从 secid 推出 code（不依赖易变的实时 quote）。
+// 基金（ETF）自身无估值数据，统一映射到它跟踪的指数 code（trackIndex），借用该指数的
+// data/<code>.json。键只由 secid 决定，保证 loadValuation(首屏 quote=null) 的写入键与之后
+// 各处带 quote 查询时的键完全一致——否则远程搜索进入、且 quote.code≠secid 后缀的指数会因
+// 写/读键不同而把已加载的估值当成“无数据”静默丢失。
+function secid_to_code(secid) {
   const fund = FUNDS.find((f) => f.secid === secid);
   if (fund) return fund.trackIndex;
-  if (quote && quote.code) return quote.code;
   const known = POPULAR.find((p) => p.secid === secid);
   if (known) return known.code;
   return secid.split(".")[1];
