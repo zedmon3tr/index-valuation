@@ -226,3 +226,19 @@ a{color:inherit;text-decoration:none}
   .source-note{max-width:110px;text-align:right}
   #chart{height:380px}
 }
+
+/* ---------- 跟踪关联卡片 ---------- */
+.tracking-card{margin:0 20px 0;padding:14px 16px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);box-shadow:var(--ws-shadow)}
+.tracking-title{font-weight:700;font-size:15px;margin-bottom:10px;color:var(--ink)}
+.tracking-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px 18px}
+.tk-cell{display:flex;flex-direction:column;gap:4px}
+.tk-k{font-size:12px;color:var(--ink-3)}
+.tk-v{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.tk-v .tk-code{font-style:normal;font-size:12px;color:var(--ink-3);margin-left:4px;font-weight:400}
+.tk-v a{color:var(--accent-strong);text-decoration:none}
+.tk-v a:hover{text-decoration:underline}
+.tk-muted{color:var(--ink-3);font-weight:500}
+.tk-te .te-dev{display:block;font-size:12px;color:var(--ink-3);margin-top:2px;font-weight:400}
+.point-tag{font-size:11px;color:var(--ink-3);margin-left:4px;font-weight:400}
+.tracking-loading{color:var(--ink-3);font-size:13px}
+@media(max-width:640px){.tracking-card{margin:0 8px}.tracking-grid{grid-template-columns:1fr 1fr}}

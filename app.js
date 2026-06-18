@@ -151,6 +151,34 @@ async function loadValuation(code) {
   }
 }
 
+/* ---------- 3c. 基金净值 JSON（两份：快照 + 历史净值） ---------- */
+let fundNavSnapshot = undefined;   // funds_nav.json：{code → {nav, estimate, …}}
+let fundNavHist = undefined;       // funds_nav_hist.json：{code → {navDates, nav}}
+
+async function loadFundNav() {
+  if (fundNavSnapshot !== undefined) return fundNavSnapshot;
+  try {
+    const r = await fetch("./data/funds_nav.json?v=20260618-tracking", { cache: "no-cache" });
+    if (!r.ok) throw new Error("404");
+    const j = await r.json();
+    fundNavSnapshot = {};
+    (j.funds || []).forEach((f) => { fundNavSnapshot[f.code] = f; });
+  } catch (e) { fundNavSnapshot = null; }
+  return fundNavSnapshot;
+}
+
+async function loadFundNavHist() {
+  if (fundNavHist !== undefined) return fundNavHist;
+  try {
+    const r = await fetch("./data/funds_nav_hist.json?v=20260618-tracking", { cache: "no-cache" });
+    if (!r.ok) throw new Error("404");
+    const j = await r.json();
+    fundNavHist = {};
+    (j.funds || []).forEach((f) => { fundNavHist[f.code] = f; });
+  } catch (e) { fundNavHist = null; }
+  return fundNavHist;
+}
+
 /* ---------- 4. 格式化 ---------- */
 const fmt = (x, d = 2) => (x == null || !isFinite(x) ? "—" : x.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const fmtPct = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + x.toFixed(2) + "%");
@@ -372,6 +400,7 @@ async function renderDetail(secid) {
 
       ${hasPoint ? "" : `<div class="feed-notice">实时行情接口（东方财富）暂时不可用，「指数点位」已置灰，仅展示历史 PE / PB / 股息率分位分析。</div>`}
       ${fund ? `<div class="feed-notice">「${name}」是 ETF，下方估值分位 / 机会线基于其跟踪指数 <b>${trackName}（${fund.trackIndex}）</b>；上方为基金自身实时价格。</div>` : ""}
+      ${fund ? `<section class="tracking-card" id="trackingCard" aria-label="跟踪关联"><div class="tracking-loading">跟踪数据加载中…</div></section>` : ""}
 
       <div class="instrument-strip">
         <div>
@@ -445,6 +474,11 @@ async function renderDetail(secid) {
   drawDetail(secid, quote);
   // 故意用赋值（单例）而非 addEventListener：每次进详情页覆盖上一个，天然避免反复进出累积监听泄漏。
   window.onresize = () => chart && chart.resize();
+
+  // 基金详情页：渲染跟踪关联卡片（本地数据先点亮，实时点位后台补）
+  // 先把卡片骨架渲染出来（含 #trackPoint / #trackPremium），再后台补实时点位与溢价率，
+  // 避免 refresh* 在卡片 DOM 就位前查不到元素。
+  if (fund) renderTrackingCard(fund, val).then(() => { refreshTrackPoint(fund); refreshPremium(fund); });
 
   // 首屏已用本地数据渲染完成；实时行情/K线到了再补价格与最新点位，不让它拖慢页面。
   if (renderedFromLocal) {
@@ -685,6 +719,122 @@ function renderPctBadge(stats, metric) {
     color = zone === "high" ? "var(--danger)" : zone === "low" ? "var(--chance)" : "var(--median)";
   }
   box.innerHTML = `当前${metric.short} <b style="color:${color}">${verdict}</b> · 历史分位 ${p.toFixed(1)}%`;
+}
+
+// 估值状态语义：与 renderPctBadge 同口径（PE/PB 越高越贵）
+function valuationVerdict(stats) {
+  if (!stats) return { text: "—", color: "var(--ink-3)" };
+  const p = Math.max(0, Math.min(100, stats.percentile));
+  const zone = p >= 80 ? "high" : p <= 20 ? "low" : "mid";
+  const text = zone === "high" ? "偏高估" : zone === "low" ? "偏低估" : "估值合理";
+  const color = zone === "high" ? "var(--danger)" : zone === "low" ? "var(--chance)" : "var(--median)";
+  return { text, color, pct: p };
+}
+
+// 渲染基金「跟踪关联」卡片。val=已加载的指数估值；fund=funds.json 条目。
+async function renderTrackingCard(fund, val) {
+  const box = document.getElementById("trackingCard");
+  if (!box || !fund) return;
+  const idxObj = POPULAR.find((p) => p.code === fund.trackIndex);
+  const idxName = (idxObj && idxObj.name) || fund.trackIndex;
+  const idxSecid = idxObj && idxObj.secid;
+
+  // 1) 估值状态（指数 PE 优先，缺则 PB）；缺数据则置灰
+  const peStats = val && Core.hasSeries(val.pe) ? Core.analyze(val.pe) : null;
+  const pbStats = !peStats && val && Core.hasSeries(val.pb) ? Core.analyze(val.pb) : null;
+  const vStats = peStats || pbStats;
+  const vKind = peStats ? "PE" : pbStats ? "PB" : "";
+  const verdict = valuationVerdict(vStats);
+  const verdictHTML = vStats
+    ? `<b style="color:${verdict.color}">${verdict.text}</b>`
+    : `<b class="tk-muted">—</b>`;
+  const verdictLabel = vKind && vStats
+    ? `指数估值 (${vKind} 分位 ${verdict.pct != null ? verdict.pct.toFixed(1) + "%" : "—"})`
+    : "指数估值";
+
+  // 2) 溢价率：基金实时市价 vs 盘中估值(IOPV≈estimate)。市价由 refreshPremium 后台补；
+  //    这里先放占位。快照里连 estimate(IOPV) 都没有才直接「暂不可用」置灰。
+  const snap = await loadFundNav();
+  const s = snap && snap[fund.code];
+  const premiumHTML = (s && s.estimate != null)
+    ? `<b id="trackPremium" class="tk-muted">加载中…</b>`
+    : `<b id="trackPremium" class="tk-muted">暂不可用</b>`;
+
+  // 3) 跟踪误差（净值历史 × 指数 close）；无 close 或无净值历史则置灰
+  const histAll = await loadFundNavHist();
+  const h = histAll && histAll[fund.code];
+  let teHTML;
+  if (h && h.navDates && h.nav && h.nav.length > 0 && val && Core.hasSeries(val.close)) {
+    const t = Core.calculateTracking(h.navDates, h.nav, val.dates, val.close, { years: 1 });
+    if (t) {
+      const devKlass = t.deviation >= 0 ? "up" : "down";
+      teHTML = `<b>${(t.annualizedTE * 100).toFixed(2)}%</b>`
+        + `<span class="te-dev">近1年偏离 <i class="${devKlass}">${t.deviation >= 0 ? "+" : ""}${(t.deviation * 100).toFixed(2)}%</i></span>`;
+    } else {
+      teHTML = `<b class="tk-muted">数据不足</b>`;
+    }
+  } else {
+    // 缺指数历史点位(如纳指/标普无静态 close)或缺基金净值历史，两种情况统一置灰
+    teHTML = `<b class="tk-muted">暂不可用</b>`;
+  }
+
+  // 4) 点位占位：先用静态 close 末值 + 「快照」标签；refreshTrackPoint 后台补实时值
+  const lastClose = val && Core.hasSeries(val.close) ? val.close[val.close.length - 1] : null;
+  const pointHTML = lastClose != null
+    ? `<span id="trackPoint">${fmt(lastClose)} <span class="point-tag">快照</span></span>`
+    : `<span id="trackPoint" class="tk-muted">—</span>`;
+
+  box.innerHTML = `
+    <div class="tracking-title">跟踪关联</div>
+    <div class="tracking-grid">
+      <div class="tk-cell">
+        <span class="tk-k">追踪指数</span>
+        <span class="tk-v">${idxSecid ? `<a href="#/idx/${idxSecid}">${idxName}</a>` : idxName} <i class="tk-code">${fund.trackIndex}</i></span>
+      </div>
+      <div class="tk-cell">
+        <span class="tk-k">${verdictLabel}</span>
+        <span class="tk-v">${verdictHTML}</span>
+      </div>
+      <div class="tk-cell">
+        <span class="tk-k">指数当前点位</span>
+        <span class="tk-v">${pointHTML}</span>
+      </div>
+      <div class="tk-cell">
+        <span class="tk-k">溢价率(实时)</span>
+        <span class="tk-v">${premiumHTML}</span>
+      </div>
+      <div class="tk-cell tk-te">
+        <span class="tk-k">近1年跟踪误差(年化)</span>
+        <span class="tk-v">${teHTML}</span>
+      </div>
+    </div>`;
+}
+
+// 指数实时点位后台补：行情到了就更新 #trackPoint，覆盖静态快照值。
+async function refreshTrackPoint(fund) {
+  if (!fund) return;
+  const idxObj = POPULAR.find((p) => p.code === fund.trackIndex);
+  if (!idxObj) return;
+  const q = await EM.quote(idxObj.secid).catch(() => null);
+  const el = document.getElementById("trackPoint");
+  if (!el || !q || q.price == null) return;
+  el.className = cls(q.pct);
+  el.innerHTML = `${fmt(q.price)} <span class="point-tag ${cls(q.pct)}">${fmtPct(q.pct)}</span>`;
+}
+
+// 溢价率后台补：基金实时市价(EM.quote 自身 secid) vs 盘中估值(IOPV≈快照 estimate)。
+// (市价 - IOPV)/IOPV 才是真·溢价/折价率；缺市价或缺 IOPV 则保持置灰。
+async function refreshPremium(fund) {
+  if (!fund) return;
+  const snap = await loadFundNav();
+  const s = snap && snap[fund.code];
+  const el = document.getElementById("trackPremium");
+  if (!el || !s || s.estimate == null) return;          // 无 IOPV，保持「暂不可用」
+  const q = await EM.quote(fund.secid).catch(() => null);
+  if (!q || q.price == null) { el.textContent = "—"; el.className = "tk-muted"; return; }
+  const prem = (q.price - s.estimate) / s.estimate * 100;
+  el.className = prem > 0 ? "up" : prem < 0 ? "down" : "flat";
+  el.innerHTML = `${prem >= 0 ? "溢价 " : "折价 "}${Math.abs(prem).toFixed(2)}%`;
 }
 
 function renderCoverage(series, metric, source) {
