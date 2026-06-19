@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-18 12:51:50",
+  "generatedAt": "2026-06-19 13:33:58",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -87,12 +87,12 @@
       "name": "纳指ETF国泰",
       "secid": "1.513100",
       "trackIndex": "NDX",
-      "nav": 2.037,
-      "navRaw": "2.0370",
-      "navDate": "2026-06-16",
-      "estimate": 2.018,
-      "estimateChangePct": "-0.94",
-      "estimateTime": "2026-06-18 04:00",
+      "nav": 2.016,
+      "navRaw": "2.0164",
+      "navDate": "2026-06-17",
+      "estimate": 2.064,
+      "estimateChangePct": "2.35",
+      "estimateTime": "2026-06-19 04:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -191,12 +191,12 @@
       "name": "标普500ETF博时",
       "secid": "1.513500",
       "trackIndex": "SPX",
-      "nav": 2.421,
-      "navRaw": "2.4209",
-      "navDate": "2026-06-16",
-      "estimate": 2.397,
-      "estimateChangePct": "-0.98",
-      "estimateTime": "2026-06-18 04:00",
+      "nav": 2.39,
+      "navRaw": "2.3904",
+      "navDate": "2026-06-17",
+      "estimate": 2.394,
+      "estimateChangePct": "0.13",
+      "estimateTime": "2026-06-19 04:00",
       "source": "eastmoney:fundgz"
     }
   ]
