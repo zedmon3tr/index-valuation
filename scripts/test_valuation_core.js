@@ -166,4 +166,26 @@ function approxEqual(actual, expected, message) {
   assert.ok(r && Number.isFinite(r.annualizedTE), "窗口过大仍返回有限值");
 }
 
+/* ---------- heatmapColor（板块热力图色阶，HSL 固定色相、红涨绿跌） ---------- */
+{
+  const rgb = (s) => s.match(/\d+/g).map(Number);
+  // 缺失/非法涨跌幅 → 固定浅灰
+  assert.strictEqual(Core.heatmapColor(null), "rgb(176,184,193)", "null → 缺失灰");
+  assert.strictEqual(Core.heatmapColor(NaN), "rgb(176,184,193)", "NaN → 缺失灰");
+  assert.strictEqual(Core.heatmapColor(undefined), "rgb(176,184,193)", "undefined → 缺失灰");
+  // 涨 → 红通道主导；跌 → 绿通道主导（关键：永不混成灰/棕）
+  let [r, g, b] = rgb(Core.heatmapColor(3));
+  assert.ok(r > g && r > b, "涨：红通道主导");
+  [r, g, b] = rgb(Core.heatmapColor(-3));
+  assert.ok(g > r && g > b, "跌：绿通道主导");
+  // |pct|≥maxAbs 截断到满档：超过与等于同色
+  assert.strictEqual(Core.heatmapColor(50), Core.heatmapColor(5), "涨远超档位 → 截断到满档");
+  assert.strictEqual(Core.heatmapColor(-50), Core.heatmapColor(-5), "跌远超档位 → 截断到满档");
+  // 涨幅越大越红（红绿通道差越大 = 饱和度越高）
+  const strong = rgb(Core.heatmapColor(5)), weak = rgb(Core.heatmapColor(1));
+  assert.ok((strong[0] - strong[1]) > (weak[0] - weak[1]), "涨幅越大越饱和（越红）");
+  // 自定义 maxAbs：+10@max10 与 +5@max5 都是满档 → 同色
+  assert.strictEqual(Core.heatmapColor(10, 10), Core.heatmapColor(5, 5), "自定义 maxAbs 满档一致");
+}
+
 console.log("valuation-core tests passed");

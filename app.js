@@ -128,6 +128,43 @@ const EM = {
         }));
     } catch (e) { return []; }
   },
+
+  // 板块列表（行业 / 概念）——东方财富板块行情。一次返回每个板块的点位、涨跌幅、总市值、
+  // 换手、主力净流入、涨跌家数、领涨股，正好喂热力图（面积=市值、颜色=涨跌）。
+  // fltt=2&invt=2：数值已格式化为真实小数（涨跌幅如 2.34、市值为元），无需再缩放。
+  // dim: "industry"→ t:2（行业，含申万各级板块）、"concept"→ t:3（概念板块）。板块 K 线 secid = f13.f12（如 90.BK1201）。
+  // ⚠️ 东财 clist 单页上限 100 条。按 fid=f20 总市值倒序取——下游只要申万一级 31 个(市值最大的板块、
+  //    必在前 3 页)与市值前 60 概念(必在首页)，故行业取 3 页、概念取 1 页即够，比逐板块翻全表(~5页)更省更稳。
+  //    每页独立 try/catch：单页慢/失败只丢该页、用已取到的，不让整张热力图连坐失败。
+  async boards(dim) {
+    const t = dim === "concept" ? 3 : 2;
+    const pages = dim === "concept" ? 1 : 3;
+    const fields = "f2,f3,f4,f8,f12,f13,f14,f20,f62,f104,f105,f128,f136,f140,f141";
+    const num = (v) => (v == null || v === "-" || !isFinite(v) ? null : Number(v));
+    const all = [];
+    for (let pn = 1; pn <= pages; pn++) {
+      let arr;
+      try {
+        const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=${pn}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f20&fs=m:90+t:${t}&fields=${fields}&_=${Date.now()}`;
+        const r = await jsonp(url, "cb", 12000);
+        const d = (r && r.data) || {};
+        arr = Array.isArray(d.diff) ? d.diff : Object.values(d.diff || {});
+      } catch (e) { continue; }   // 单页慢/失败：跳过该页继续试后面页，不整体失败也不连坐丢后续页
+      if (!arr || !arr.length) break;
+      arr.forEach((x) => {
+        if (!x || !x.f12 || !x.f14) return;
+        all.push({
+          secid: `${x.f13}.${x.f12}`, code: x.f12, name: x.f14,
+          price: num(x.f2), pct: num(x.f3), chg: num(x.f4), turnover: num(x.f8),
+          cap: num(x.f20), inflow: num(x.f62), up: num(x.f104), down: num(x.f105),
+          leadName: x.f128 && x.f128 !== "-" ? x.f128 : "", leadPct: num(x.f136),
+          leadSecid: x.f140 && x.f141 != null ? `${x.f141}.${x.f140}` : "",
+        });
+      });
+      if (arr.length < 100) break;  // 不足一页 → 已到末页
+    }
+    return all;
+  },
 };
 
 // 搜索暴露指数 + 基金（ETF/LOF 均为 "基金"），屏蔽个股/板块。可扩展：加类型即可放开，如 "沪A"/"深A"/"港股"/"美股"。
@@ -188,10 +225,14 @@ const cls = (x) => (x == null ? "flat" : x > 0 ? "up" : x < 0 ? "down" : "flat")
 const view = document.getElementById("view");
 function router() {
   const hash = location.hash || "#/";
-  const m = hash.match(/^#\/idx\/(.+)$/);
-  // 详情页展开成宽幅工作台，首页保持窄容器（见 styles.css 的 #view.view-wide）
-  view.classList.toggle("view-wide", Boolean(m));
-  if (m) renderDetail(decodeURIComponent(m[1]));
+  const mIdx = hash.match(/^#\/idx\/(.+)$/);
+  const mBoard = hash.match(/^#\/board\/(.+)$/);
+  const isHeatmap = hash === "#/heatmap" || hash.startsWith("#/heatmap");
+  // 详情页 / 热力图 / 板块详情都展开成宽幅工作台，首页保持窄容器（见 styles.css 的 #view.view-wide）
+  view.classList.toggle("view-wide", Boolean(mIdx || mBoard || isHeatmap));
+  if (mIdx) renderDetail(decodeURIComponent(mIdx[1]));
+  else if (mBoard) renderBoard(decodeURIComponent(mBoard[1]));
+  else if (isHeatmap) renderHeatmap();
   else renderHome();
 }
 window.addEventListener("hashchange", router);
@@ -228,6 +269,11 @@ async function renderHome() {
       <h1>指数估值 · 行情分析</h1>
       <p>搜索任意指数或基金（ETF），查看实时点位、涨跌，以及历史点位 / PE / PB / 股息率分位分析。</p>
     </section>
+    <a class="heatmap-entry" href="#/heatmap">
+      <span class="he-ico" aria-hidden="true">🔥</span>
+      <span class="he-text"><strong>A股板块热力图</strong><span>一眼看清行业 / 概念板块今日涨跌强弱</span></span>
+      <span class="he-go">查看 ›</span>
+    </a>
     ${sections}
   `;
   try {
@@ -939,6 +985,269 @@ function renderChart(series, pointValues, stats, metric) {
     ],
     series: chartSeries,
   });
+}
+
+/* ---------- 8b. A股板块热力图 ---------- */
+// 维度（行业/概念）与筛选（全部/涨/跌）+ 搜索词存模块级 state：从板块详情页返回时保留上次筛选
+//（PRD §4.3）。boards 缓存按维度短 TTL，避免来回切重复打东财。
+const HEAT_DIMS = [{ k: "industry", label: "行业" }, { k: "concept", label: "概念" }];
+const HEAT_FILTERS = [{ k: "all", label: "全部" }, { k: "up", label: "仅看上涨" }, { k: "down", label: "仅看下跌" }];
+const HEAT_TTL = 15000;
+// 行业维度只取申万一级 31 个板块（按名称匹配——东财 t:2 里申万一级以同名一级板块出现，
+// 名称稳定、自动解析其 BK 代码）。东财 t:2 混含申万一/二/三级，若全取会父子重叠、市值重复计，
+// treemap 面积口径就乱了；锁定单一的申万一级层级，面积=市值才自洽，也正合 PRD 默认口径。
+const SW1_NAMES = new Set(["农林牧渔", "基础化工", "钢铁", "有色金属", "电子", "家用电器", "食品饮料", "纺织服饰", "轻工制造", "医药生物", "公用事业", "交通运输", "房地产", "商贸零售", "社会服务", "综合", "建筑材料", "建筑装饰", "电力设备", "机械设备", "国防军工", "汽车", "计算机", "传媒", "通信", "银行", "非银金融", "煤炭", "石油石化", "环保", "美容护理"]);
+// 概念板块约 500 个且成分高度重叠（一只股可属多概念，市值会重复计），全画过密；MVP 取市值最大的前 N 个，保证可读。
+const CONCEPT_LIMIT = 60;
+// 把东财原始板块列表按维度整形：行业→申万一级 31 个；概念→市值前 CONCEPT_LIMIT 个。
+function shapeBoards(dim, boards) {
+  if (dim === "concept") return [...boards].sort((a, b) => (b.cap || 0) - (a.cap || 0)).slice(0, CONCEPT_LIMIT);
+  const sw1 = boards.filter((b) => SW1_NAMES.has(b.name));
+  // 名称白名单依赖东财沿用申万一级板块名；若上游改名或取数缺页会少匹配、静默少画几格。
+  // 数量偏离 31 时告警，让漂移可见（而非无声少格）。
+  if (sw1.length !== SW1_NAMES.size) console.warn(`[热力图] 申万一级板块匹配到 ${sw1.length}/${SW1_NAMES.size} 个（可能东财板块改名或取数缺页）`);
+  return sw1;
+}
+const heatmapState = { dim: "industry", filter: "all", search: "", boards: null, boardsDim: null, ts: 0 };
+let heatChart = null;
+let heatSearchTimer = null;
+
+const fmtCap = (yuan) => {
+  if (yuan == null || !isFinite(yuan)) return "—";
+  if (yuan >= 1e12) return (yuan / 1e12).toFixed(2) + " 万亿";
+  if (yuan >= 1e8) return (yuan / 1e8).toFixed(0) + " 亿";
+  return (yuan / 1e4).toFixed(0) + " 万";
+};
+const fmtTime = (ts) => (ts ? new Date(ts).toLocaleTimeString("zh-CN", { hour12: false }) : "—");
+
+async function renderHeatmap() {
+  const reqHash = location.hash;
+  const seg = (items, active, attr) =>
+    items.map((it) => `<button class="segment ${it.k === active ? "active" : ""}" data-${attr}="${it.k}">${it.label}</button>`).join("");
+  view.innerHTML = `
+    <section class="heatmap-workspace">
+      <div class="analysis-toolbar">
+        <div class="control-row">
+          <div class="control-group"><span class="control-label">维度</span>
+            <div class="segmented" id="heatDimTabs">${seg(HEAT_DIMS, heatmapState.dim, "dim")}</div></div>
+          <div class="control-group"><span class="control-label">筛选</span>
+            <div class="segmented" id="heatFilterTabs">${seg(HEAT_FILTERS, heatmapState.filter, "filter")}</div></div>
+          <label class="select-control heat-search"><span>搜索</span>
+            <input id="heatSearch" type="text" autocomplete="off" placeholder="板块名称" value="${heatmapState.search.replace(/"/g, "&quot;")}"></label>
+          <button class="reset-button" id="heatRefresh" type="button">刷新</button>
+        </div>
+      </div>
+      <div class="instrument-strip heat-strip">
+        <div><a class="back" href="#/">‹ 返回首页</a>
+          <div class="instrument-title"><strong>A股板块热力图</strong><span>面积=总市值 · 颜色=涨跌幅（红涨绿跌）· 行业取申万一级 / 概念取市值前 ${CONCEPT_LIMIT}</span></div></div>
+        <div class="heat-foot" id="heatFoot">板块行情加载中…</div>
+      </div>
+      <div class="heat-canvas" id="heatCanvas"><div class="heat-skeleton">板块行情加载中…</div></div>
+    </section>`;
+  bindHeatmapControls(reqHash);
+  await loadECharts().catch(() => {});
+  if (location.hash !== reqHash) return;
+  loadBoards(reqHash, false);
+}
+
+function bindHeatmapControls(reqHash) {
+  document.getElementById("heatDimTabs").onclick = (e) => {
+    const t = e.target.closest("[data-dim]"); if (!t) return;
+    heatmapState.dim = t.dataset.dim;
+    document.querySelectorAll("#heatDimTabs .segment").forEach((s) => s.classList.toggle("active", s.dataset.dim === heatmapState.dim));
+    loadBoards(reqHash, false);
+  };
+  document.getElementById("heatFilterTabs").onclick = (e) => {
+    const t = e.target.closest("[data-filter]"); if (!t) return;
+    heatmapState.filter = t.dataset.filter;
+    document.querySelectorAll("#heatFilterTabs .segment").forEach((s) => s.classList.toggle("active", s.dataset.filter === heatmapState.filter));
+    drawHeatmap(reqHash);
+  };
+  document.getElementById("heatSearch").oninput = (e) => {
+    heatmapState.search = e.target.value;
+    clearTimeout(heatSearchTimer);
+    heatSearchTimer = setTimeout(() => { if (location.hash === reqHash) drawHeatmap(reqHash); }, 200);
+  };
+  document.getElementById("heatRefresh").onclick = () => loadBoards(reqHash, true);
+}
+
+async function loadBoards(reqHash, force) {
+  const dim = heatmapState.dim;
+  const fresh = heatmapState.boards && heatmapState.boardsDim === dim && Date.now() - heatmapState.ts <= HEAT_TTL;
+  if (!force && fresh) { drawHeatmap(reqHash); return; }
+  const canvas = document.getElementById("heatCanvas");
+  if (canvas && heatmapState.boardsDim !== dim) canvas.innerHTML = `<div class="heat-skeleton">板块行情加载中…</div>`;
+  try {
+    const boards = shapeBoards(dim, await EM.boards(dim));
+    if (location.hash !== reqHash) return;
+    if (!boards.length) throw new Error("empty");
+    heatmapState.boards = boards; heatmapState.boardsDim = dim; heatmapState.ts = Date.now();
+    drawHeatmap(reqHash);
+  } catch (e) {
+    if (location.hash !== reqHash) return;
+    // 降级：若已有上次成功的同维度快照仍画它；否则提示失败。
+    if (heatmapState.boards && heatmapState.boardsDim === dim) drawHeatmap(reqHash);
+    else if (canvas) canvas.innerHTML = `<div class="heat-empty">板块行情接口暂不可用，请稍后刷新重试。</div>`;
+  }
+}
+
+function visibleBoards() {
+  let list = heatmapState.boards || [];
+  if (heatmapState.filter === "up") list = list.filter((b) => b.pct != null && b.pct > 0);
+  else if (heatmapState.filter === "down") list = list.filter((b) => b.pct != null && b.pct < 0);
+  const kw = heatmapState.search.trim().toLowerCase();
+  if (kw) list = list.filter((b) => b.name.toLowerCase().includes(kw));
+  return list;
+}
+
+function updateHeatFoot(visible) {
+  const foot = document.getElementById("heatFoot");
+  if (!foot) return;
+  const all = heatmapState.boards || [];
+  const up = all.filter((b) => b.pct != null && b.pct > 0).length;
+  const down = all.filter((b) => b.pct != null && b.pct < 0).length;
+  foot.innerHTML = `显示 ${visible.length}/${all.length} 个板块 · <span class="up">涨 ${up}</span> / <span class="down">跌 ${down}</span> · 更新于 ${fmtTime(heatmapState.ts)}`;
+}
+
+function heatTooltip(b) {
+  const rows = [
+    `<b>${b.name}</b>`,
+    `涨跌幅 <b class="${cls(b.pct)}">${fmtPct(b.pct)}</b>`,
+    b.price != null ? `点位 ${fmt(b.price)}` : "",
+    `总市值 ${fmtCap(b.cap)}`,
+    b.turnover != null ? `换手 ${fmt(b.turnover)}%` : "",
+    b.leadName ? `领涨股 ${b.leadName} <span class="${cls(b.leadPct)}">${fmtPct(b.leadPct)}</span>` : "",
+  ].filter(Boolean);
+  return rows.join("<br>");
+}
+
+// echarts 不可用时的降级榜单：按涨跌幅排序的可点击列表（PRD §10 兜底）。
+// 用 data-secid + 事件委托（不在 HTML 属性里内联拼 secid），点击绑定见 drawHeatmap 的降级分支。
+function heatListHTML(list) {
+  const rows = [...list].sort((a, b) => (b.pct == null ? -1e9 : b.pct) - (a.pct == null ? -1e9 : a.pct))
+    .map((b) => `<div class="heat-row" data-secid="${b.secid}">
+        <span class="hr-name">${b.name}</span>
+        <span class="hr-cap">${fmtCap(b.cap)}</span>
+        <span class="hr-pct ${cls(b.pct)}">${fmtPct(b.pct)}</span></div>`).join("");
+  return `<div class="heat-list" id="heatList">${rows}</div>`;
+}
+
+function drawHeatmap(reqHash) {
+  if (location.hash !== reqHash) return;
+  const canvas = document.getElementById("heatCanvas");
+  if (!canvas) return;
+  const list = visibleBoards();
+  updateHeatFoot(list);
+  if (heatChart) { try { heatChart.dispose(); } catch (e) {} heatChart = null; }
+  if (!list.length) { canvas.innerHTML = `<div class="heat-empty">没有符合当前筛选条件的板块</div>`; return; }
+  if (!window.echarts) {   // 降级为可点击榜单（事件委托读 data-secid）
+    canvas.innerHTML = heatListHTML(list);
+    const listEl = document.getElementById("heatList");
+    if (listEl) listEl.onclick = (e) => { const row = e.target.closest("[data-secid]"); if (row) location.hash = "#/board/" + row.dataset.secid; };
+    return;
+  }
+  canvas.innerHTML = `<div id="heatChart" class="heat-chart"></div>`;
+  heatChart = echarts.init(document.getElementById("heatChart"));
+  const data = list.map((b) => ({
+    name: b.name, value: Math.max(b.cap || 1, 1), _b: b,
+    itemStyle: { color: Core.heatmapColor(b.pct) },
+    label: { formatter: `${b.name}\n${fmtPct(b.pct)}` },
+  }));
+  heatChart.setOption({
+    animation: false,
+    tooltip: { borderColor: "#dfe5ea", textStyle: { color: "#1f2733", fontSize: 12 },
+      formatter: (p) => (p.data && p.data._b ? heatTooltip(p.data._b) : "") },
+    series: [{
+      type: "treemap", roam: false, nodeClick: false, breadcrumb: { show: false },
+      left: 0, right: 0, top: 0, bottom: 0,
+      label: { show: true, color: "#fff", fontSize: 12, lineHeight: 15, overflow: "truncate", textShadowColor: "rgba(0,0,0,.45)", textShadowBlur: 3 },
+      itemStyle: { borderColor: "#161b22", borderWidth: 0, gapWidth: 2 },
+      data,
+    }],
+  });
+  heatChart.off("click");
+  heatChart.on("click", (p) => { const b = p.data && p.data._b; if (b) location.hash = "#/board/" + b.secid; });
+  window.onresize = () => heatChart && heatChart.resize();
+}
+
+/* ---------- 8c. 板块详情面板 ---------- */
+let boardChart = null;
+
+async function renderBoard(secid) {
+  const reqHash = location.hash;
+  view.innerHTML = `<div class="loading">加载中…</div>`;
+  const cached = (heatmapState.boards || []).find((b) => b.secid === secid);
+  const [quote, kdata] = await Promise.all([EM.quote(secid).catch(() => null), EM.kline(secid).catch(() => null)]);
+  if (location.hash !== reqHash) return;
+  const hasK = !!(kdata && kdata.rows && kdata.rows.length);
+  if (!quote && !hasK && !cached) {
+    view.innerHTML = `<div class="error">未找到该板块的行情数据，请稍后重试。<br><a class="back" href="#/heatmap">返回热力图</a></div>`;
+    return;
+  }
+  const name = (quote && quote.name) || (cached && cached.name) || (kdata && kdata.name) || secid;
+  const code = secid.split(".")[1] || secid;
+  const price = (quote && quote.price != null) ? quote.price : (cached && cached.price);
+  const pct = (quote && quote.pct != null) ? quote.pct : (cached && cached.pct);
+  const chg = (quote && quote.chg != null) ? quote.chg : (cached && cached.chg);
+  // 板块级补充信息只在从热力图带过来的 cached 里有（实时 quote 不含家数/领涨股）。
+  const chips = [];
+  if (cached) {
+    if (cached.turnover != null) chips.push(["换手率", fmt(cached.turnover) + "%"]);
+    if (cached.cap != null) chips.push(["总市值", fmtCap(cached.cap)]);
+    if (cached.inflow != null) chips.push(["主力净流入", fmtCap(cached.inflow)]);
+    if (cached.up != null && cached.down != null) chips.push(["涨跌家数", `<span class="up">${cached.up}</span> / <span class="down">${cached.down}</span>`]);
+    if (cached.leadName) chips.push(["领涨股", `${cached.leadName} <span class="${cls(cached.leadPct)}">${fmtPct(cached.leadPct)}</span>`]);
+  }
+  const chgStr = chg == null ? "" : `  ${chg >= 0 ? "+" : ""}${fmt(chg)}`;
+  view.innerHTML = `
+    <section class="board-workspace">
+      <div class="instrument-strip">
+        <div><a class="back" href="#/heatmap">‹ 返回热力图</a>
+          <div class="instrument-title"><strong>${name}</strong><span>${code} · ${secid}</span></div></div>
+        <div class="market-quote">${price != null
+          ? `<strong class="${cls(pct)}">${fmt(price)}</strong><span class="${cls(pct)}">${fmtPct(pct)}${chgStr}</span>`
+          : `<span class="quote-pending">行情快照暂不可用</span>`}</div>
+      </div>
+      ${chips.length ? `<div class="board-chips">${chips.map(([k, v]) => `<div class="board-chip"><span class="bc-k">${k}</span><span class="bc-v">${v}</span></div>`).join("")}</div>` : ""}
+      <div class="analysis-card board-card">
+        <div class="chart-pane">
+          <div class="chart-heading"><strong>板块走势（日K）</strong></div>
+          <div id="boardChart" class="board-chart"></div>
+        </div>
+      </div>
+    </section>`;
+  await loadECharts().catch(() => {});
+  if (location.hash !== reqHash) return;
+  drawBoardChart(kdata);
+}
+
+function drawBoardChart(kdata) {
+  const el = document.getElementById("boardChart");
+  if (!el) return;
+  const rows = (kdata && kdata.rows) || [];
+  // 早退分支先清掉可能指向旧/已替换容器的实例（与 renderChart 同口径），避免 onresize 调到死实例。
+  if (!window.echarts || !rows.length) {
+    if (boardChart) { try { boardChart.dispose(); } catch (e) {} boardChart = null; }
+    el.innerHTML = `<div class="chart-fallback">${!window.echarts ? (echartsPromise ? "图表组件加载中…" : "图表组件加载失败") : "暂无 K 线数据"}</div>`;
+    return;
+  }
+  if (boardChart) boardChart.dispose();
+  boardChart = echarts.init(el);
+  const dates = rows.map((r) => r.date);
+  const candle = rows.map((r) => [r.open, r.close, r.low, r.high]);
+  boardChart.setOption({
+    animation: false,
+    grid: { left: 56, right: 20, top: 24, bottom: 60 },
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    xAxis: { type: "category", data: dates, boundaryGap: true, axisLine: { lineStyle: { color: "#cfd7df" } }, axisLabel: { color: "#909aa8", fontSize: 11 } },
+    yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "#e8edf1" } }, axisLabel: { color: "#687482", fontSize: 11 } },
+    dataZoom: [{ type: "inside", start: 70, end: 100 }, { type: "slider", height: 18, bottom: 24, start: 70, end: 100, borderColor: "#dfe5ea", fillerColor: "rgba(79,178,199,.18)", backgroundColor: "#f4f7f8" }],
+    series: [{
+      type: "candlestick", data: candle,
+      itemStyle: { color: "#e0524a", color0: "#2bab6b", borderColor: "#e0524a", borderColor0: "#2bab6b" },
+    }],
+  });
+  window.onresize = () => boardChart && boardChart.resize();
 }
 
 /* ---------- 9. 搜索框 ---------- */
