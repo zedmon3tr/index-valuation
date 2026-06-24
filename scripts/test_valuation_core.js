@@ -194,4 +194,44 @@ function approxEqual(actual, expected, message) {
   assert.strictEqual(Core.heatmapTextColor(null), "#1f2733", "缺失 → 深色字");
 }
 
+/* ---------- ema ---------- */
+{
+  // N=1 → α=1 → 原样
+  assert.deepStrictEqual(Core.ema([1, 2, 3, 4, 5], 1), [1, 2, 3, 4, 5], "N=1 原样");
+  // N=3 → α=0.5，首值播种后递推
+  const e = Core.ema([1, 2, 3, 4, 5], 3);
+  approxEqual(e[0], 1, "EMA 首值=首价");
+  approxEqual(e[1], 1.5, "EMA 第二档 .5*2+.5*1");
+  approxEqual(e[2], 2.25, "EMA 第三档");
+  approxEqual(e[3], 3.125, "EMA 第四档");
+  approxEqual(e[4], 4.0625, "EMA 第五档");
+  // 前导 null：播种推迟到首个有效值
+  const withNull = Core.ema([null, 2, 4], 3);
+  assert.strictEqual(withNull[0], null, "首个有效值前为 null");
+  approxEqual(withNull[1], 2, "首个有效值播种");
+  approxEqual(withNull[2], 3, ".5*4+.5*2");
+  // 非法 N → 全 null
+  assert.deepStrictEqual(Core.ema([1, 2, 3], 0), [null, null, null], "N<1 全 null");
+  assert.deepStrictEqual(Core.ema([1, 2, 3], NaN), [null, null, null], "N 非数 全 null");
+}
+
+/* ---------- resampleOhlc ---------- */
+{
+  const rows = [
+    { date: "2021-01-04", open: 10, high: 12, low: 9, close: 11 },
+    { date: "2021-01-05", open: 11, high: 15, low: 8, close: 14 },
+    { date: "2021-02-01", open: 14, high: 16, low: 13, close: 15 },
+  ];
+  // D 原样
+  assert.deepStrictEqual(Core.resampleOhlc(rows, "D").map((r) => r.date), rows.map((r) => r.date), "D 原样");
+  // 月：高=桶内最高、低=桶内最低、close/date=最晚交易日、open=最早
+  const monthly = Core.resampleOhlc(rows, "M");
+  assert.deepStrictEqual(monthly.map((r) => r.date), ["2021-01-05", "2021-02-01"], "月桶取最晚交易日");
+  assert.deepStrictEqual(monthly[0], { date: "2021-01-05", open: 10, high: 15, low: 8, close: 14 }, "1 月桶聚合 high/low/open/close");
+  assert.deepStrictEqual(monthly[1], { date: "2021-02-01", open: 14, high: 16, low: 13, close: 15 }, "2 月桶单根");
+  // 乱序输入先排序再分桶
+  const unordered = Core.resampleOhlc([rows[2], rows[0], rows[1]], "M");
+  assert.deepStrictEqual(unordered.map((r) => r.date), ["2021-01-05", "2021-02-01"], "乱序输入排序后分桶");
+}
+
 console.log("valuation-core tests passed");
