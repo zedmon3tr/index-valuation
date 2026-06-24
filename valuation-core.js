@@ -106,6 +106,50 @@
     return { dates: selected.map((item) => item.date), values: selected.map((item) => item.value) };
   }
 
+  // 指数加权移动平均（EMA）。span=周期 N，α=2/(N+1)；首个有效值直接播种（与通达信 EMA 一致）。
+  // N=1 → α=1 即原样；遇 null/非数则沿用上一档 EMA（不更新），首个有效值之前输出 null。
+  function ema(values, span) {
+    const n = Number(span);
+    const out = values.map(() => null);
+    if (!Number.isFinite(n) || n < 1) return out;
+    const alpha = 2 / (n + 1);
+    let prev = null;
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      if (value == null || !Number.isFinite(Number(value))) { out[i] = prev; continue; }
+      const x = Number(value);
+      prev = prev == null ? x : alpha * x + (1 - alpha) * prev;
+      out[i] = prev;
+    }
+    return out;
+  }
+
+  // OHLC 重采样：D 原样；W/M 按周/月分桶，high=桶内最高、low=桶内最低、close/date=桶内最晚交易日、
+  // open=桶内最早。供「EMA(最高价)/EMA(最低价)」类通道指标在周/月级别复用日线高低价。
+  function resampleOhlc(rows, period = "D") {
+    const clean = (rows || [])
+      .filter((row) => row && row.date)
+      .slice()
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (period === "D") return clean.map((row) => ({ ...row }));
+    const buckets = new Map();
+    clean.forEach((row) => {
+      const key = periodKey(row.date, period);
+      const high = Number(row.high);
+      const low = Number(row.low);
+      const bucket = buckets.get(key);
+      if (!bucket) {
+        buckets.set(key, { date: row.date, open: Number(row.open), high, low, close: Number(row.close) });
+        return;
+      }
+      bucket.date = row.date;
+      bucket.close = Number(row.close);
+      if (Number.isFinite(high)) bucket.high = Number.isFinite(bucket.high) ? Math.max(bucket.high, high) : high;
+      if (Number.isFinite(low)) bucket.low = Number.isFinite(bucket.low) ? Math.min(bucket.low, low) : low;
+    });
+    return [...buckets.values()];
+  }
+
   function alignPrevious(targetDates, sourceDates, sourceValues) {
     const source = sourceDates
       .map((date, index) => ({ date, value: sourceValues[index] }))
@@ -226,5 +270,5 @@
     return lum > 150 ? "#1f2733" : "#ffffff";
   }
 
-  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignPrevious, hasSeries, calculateDcaLevels, calculateTracking, heatmapColor, heatmapTextColor };
+  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, ema, resampleSeries, resampleOhlc, alignPrevious, hasSeries, calculateDcaLevels, calculateTracking, heatmapColor, heatmapTextColor };
 });

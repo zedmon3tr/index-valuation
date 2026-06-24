@@ -348,6 +348,7 @@ const detailState = {
   view: "stats",
   showQuantiles: true,
   showStd: false,
+  showBand: false,   // 通道带（双 EMA 价格通道）默认关，勾选才叠加
   customStart: "",
   customEnd: "",
 };
@@ -416,7 +417,7 @@ async function renderDetail(secid) {
   }
   // 优先默认显示估值指标（点位会作为叠加线始终展示）；仅有点位数据的指数才默认点位。
   const defaultMetric = (val && Core.hasSeries(val.pe)) ? "pe" : (val && Core.hasSeries(val.pb)) ? "pb" : (val && Core.hasSeries(val.dy)) ? "dy" : "close";
-  Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "W", ma: 0, view: "stats", showQuantiles: true, showStd: false, customStart: "", customEnd: "" });
+  Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "W", ma: 0, view: "stats", showQuantiles: true, showStd: false, showBand: false, customStart: "", customEnd: "" });
 
   view.innerHTML = `
     <section class="detail-workspace">
@@ -446,6 +447,7 @@ async function renderDetail(secid) {
           </div>
           <label class="toggle-control"><input id="quantileToggle" type="checkbox" checked><span>分位线</span></label>
           <label class="toggle-control"><input id="stdToggle" type="checkbox"><span>标准差</span></label>
+          <label class="toggle-control"><input id="bandToggle" type="checkbox"><span>通道带</span></label>
           <label class="select-control"><span>移动平均</span><select id="maSelect"><option value="0">无</option><option value="20">20期</option><option value="60">60期</option><option value="120">120期</option></select></label>
           <div class="custom-range" id="customRange" hidden>
             <input id="customStart" type="date" aria-label="开始日期">
@@ -577,6 +579,7 @@ function bindDetailControls(secid, quote) {
   document.getElementById("maSelect").onchange = (event) => { detailState.ma = Number(event.target.value); redraw(); };
   document.getElementById("quantileToggle").onchange = (event) => { detailState.showQuantiles = event.target.checked; redraw(); };
   document.getElementById("stdToggle").onchange = (event) => { detailState.showStd = event.target.checked; redraw(); };
+  document.getElementById("bandToggle").onchange = (event) => { detailState.showBand = event.target.checked; redraw(); };
   document.getElementById("customStart").onchange = (event) => { detailState.customStart = event.target.value; redraw(); };
   document.getElementById("customEnd").onchange = (event) => { detailState.customEnd = event.target.value; redraw(); };
 }
@@ -717,7 +720,7 @@ function drawDetail(secid, quote) {
   renderPctBadge(stats, metric);
   renderCoverage(series, metric, source);
   renderDetailTable(series, pointValues, metric);
-  renderChart(series, pointValues, stats, metric);
+  renderChart(series, pointValues, stats, metric, secid);
 }
 
 // 估值缓存以 code 为键，这里仅从 secid 推出 code（不依赖易变的实时 quote）。
@@ -926,7 +929,41 @@ function renderDetailTable(series, pointValues, metric) {
   `).join("");
 }
 
-function renderChart(series, pointValues, stats, metric) {
+// —— 通道指标（双 EMA 带）——
+// 设计逻辑与周期参数：仅源码/CI 可见，界面不展示（无 legend、无 tooltip、无轴外标注）。
+// 每条带 = EMA(最高价, hi) 为上轨、EMA(最低价, lo) 为下轨，两线间填充极透明同色。
+// 跟随「指数点位」价格线叠加（与之同轴），需勾选「通道带」开关 + 实时 K 线已就绪(提供
+// 每根高/低价)；K 线未到则静默不画。周/月级由日线高低价重采样。
+const CHANNEL_BANDS = [
+  { id: "f", hi: 24, lo: 23, color: "#3a78c2", fill: "rgba(58,120,194,0.07)" },
+  { id: "s", hi: 89, lo: 90, color: "#d9a400", fill: "rgba(217,164,0,0.07)" },
+];
+const isBandSeries = (name) => String(name).startsWith("__band");
+
+function channelBandSeries(secid, dates, yAxisIndex) {
+  const k = klineCache[secid];
+  if (!k || !k.rows || !k.rows.length) return [];
+  const bars = Core.resampleOhlc(k.rows, detailState.period);
+  if (!bars.length) return [];
+  const barDates = bars.map((b) => b.date);
+  const highs = bars.map((b) => b.high);
+  const lows = bars.map((b) => b.low);
+  const out = [];
+  CHANNEL_BANDS.forEach((cfg) => {
+    const upper = Core.alignPrevious(dates, barDates, Core.ema(highs, cfg.hi));
+    const lower = Core.alignPrevious(dates, barDates, Core.ema(lows, cfg.lo));
+    // 堆叠技巧填充两线之间：下轨为堆叠基线(自身不填充)，上轨画「上−下」差值叠在其上，
+    // 差值系列的折线落在上轨、areaStyle 填满下轨↔上轨。两系列均静默、不进 legend/tooltip。
+    // 必须与「指数点位」线同轴（价格轴）：点位作叠加线时在副轴(1)，点位为主图时在主轴(0)。
+    const diff = upper.map((u, i) => (u != null && lower[i] != null ? u - lower[i] : null));
+    const common = { type: "line", yAxisIndex, stack: `band_${cfg.id}`, showSymbol: false, symbol: "none", silent: true, z: 1, emphasis: { disabled: true }, lineStyle: { color: cfg.color, width: 1 }, itemStyle: { color: cfg.color } };
+    out.push({ ...common, name: `__band_${cfg.id}_lo`, data: lower, areaStyle: { opacity: 0 } });
+    out.push({ ...common, name: `__band_${cfg.id}_hi`, data: diff, areaStyle: { color: cfg.fill } });
+  });
+  return out;
+}
+
+function renderChart(series, pointValues, stats, metric, secid) {
   const el = document.getElementById("chart");
   // echarts 未就绪时降级：统计与明细仍可用，仅图表占位提示。
   // 区分「加载中」(promise 进行中——慢网下首屏点击控件会走到这里) 与「加载失败」
@@ -972,14 +1009,23 @@ function renderChart(series, pointValues, stats, metric) {
   if (showPoint) chartSeries.push({ name: "指数点位", type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: POINT_COLOR, width: 1 }, itemStyle: { color: POINT_COLOR }, areaStyle: greenArea });
   chartSeries.push(metricSeries);
   if (maValues) chartSeries.push({ name: `${metric.short} MA${detailState.ma}`, type: "line", data: maValues, showSymbol: false, connectNulls: true, lineStyle: { color: MA_COLOR, width: 1.6 }, itemStyle: { color: MA_COLOR } });
+  // 通道带跟着「价格(点位)」走：点位为主图(close)时挂主轴；点位作叠加线时挂副轴、与之同轴。
+  // 仅当图上确有价格表达时才画；不进 legend、不进 tooltip（参数不外露）。
+  const showBand = detailState.showBand && (detailState.metric === "close" || showPoint);
+  const bandSeries = showBand ? channelBandSeries(secid, series.dates, showPoint ? 1 : 0) : [];
+  const legendData = chartSeries.map((s) => s.name);
 
   chart.setOption({
     animation: false,
     grid: { left: 64, right: showPoint ? 72 : 28, top: 40, bottom: 72 },
-    legend: { bottom: 8, textStyle: { color: "#586473" } },
+    legend: { bottom: 8, data: legendData, textStyle: { color: "#586473" } },
     tooltip: {
       trigger: "axis",
-      formatter: (items) => `${items[0].axisValue}<br>${items.map((item) => `${item.marker}${item.seriesName} <b>${fmt(item.data)}${item.seriesName === metric.label ? metric.unit || "" : ""}</b>`).join("<br>")}`,
+      formatter: (items) => {
+        const rows = items.filter((item) => !isBandSeries(item.seriesName));
+        if (!rows.length) return "";
+        return `${rows[0].axisValue}<br>${rows.map((item) => `${item.marker}${item.seriesName} <b>${fmt(item.data)}${item.seriesName === metric.label ? metric.unit || "" : ""}</b>`).join("<br>")}`;
+      },
     },
     xAxis: {
       type: "category", data: series.dates, boundaryGap: false,
@@ -994,7 +1040,7 @@ function renderChart(series, pointValues, stats, metric) {
       { type: "inside", start: 0, end: 100 },
       { type: "slider", height: 18, bottom: 38, borderColor: "#dfe5ea", fillerColor: "rgba(79,178,199,.18)", backgroundColor: "#f4f7f8" },
     ],
-    series: chartSeries,
+    series: [...bandSeries, ...chartSeries],
   });
 }
 
