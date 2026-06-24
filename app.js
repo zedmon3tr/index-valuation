@@ -130,13 +130,14 @@ const EM = {
   },
 
   // 板块列表（行业 / 概念）——东方财富板块行情。一次返回每个板块的点位、涨跌幅、总市值、
-  // 换手、主力净流入、涨跌家数、领涨股，正好喂热力图（面积=市值、颜色=涨跌）。
+  // 换手、主力净流入、涨跌家数、领涨股，喂热力图（面积=|涨跌幅|、颜色=涨跌方向）与板块详情。
   // fltt=2&invt=2：数值已格式化为真实小数（涨跌幅如 2.34、市值为元），无需再缩放。
   // dim: "industry"→ t:2（行业，含申万各级板块）、"concept"→ t:3（概念板块）。板块 K 线 secid = f13.f12（如 90.BK1201）。
   // ⚠️ 东财 clist 单页上限 100 条。多页**并行**取（Promise.allSettled）——早先行业串行取 3 页、
   //    每次 12s 超时，弱网下累积超时常导致整体拉取失败；并行后总耗时≈单页、且单页失败不连坐。
-  //  - 行业：按市值(fid=f20)倒序取前 3 页（申万一级 31 个均在其中，下游按名称白名单挑出）。
-  //  - 概念：约 500 个、面积按|涨跌|强弱，故取「涨幅榜首页 + 跌幅榜首页」覆盖两端最大波动，下游按 |pct| 选前 N。
+  //  - 行业：按市值(fid=f20)倒序取前 3 页仅为「覆盖」（保证申万一级 31 个都在内，下游按名称白名单挑出）；
+  //    面积已不看市值，故此排序只影响取全、不影响展示。
+  //  - 概念：约 500 个，取「涨幅榜首页(f3 desc) + 跌幅榜首页(f3 asc)」覆盖两端，下游 shapeBoards 取涨/跌各前 N 的均衡集。
   async boards(dim) {
     const t = dim === "concept" ? 3 : 2;
     const fields = "f2,f3,f4,f8,f12,f13,f14,f20,f62,f104,f105,f128,f136,f140,f141";
@@ -1003,13 +1004,17 @@ const HEAT_TTL = 15000;
 // 名称稳定、自动解析其 BK 代码）。东财 t:2 混含申万一/二/三级，若全取会父子重叠、市值重复计，
 // treemap 面积口径就乱了；锁定单一的申万一级层级，面积=市值才自洽，也正合 PRD 默认口径。
 const SW1_NAMES = new Set(["农林牧渔", "基础化工", "钢铁", "有色金属", "电子", "家用电器", "食品饮料", "纺织服饰", "轻工制造", "医药生物", "公用事业", "交通运输", "房地产", "商贸零售", "社会服务", "综合", "建筑材料", "建筑装饰", "电力设备", "机械设备", "国防军工", "汽车", "计算机", "传媒", "通信", "银行", "非银金融", "煤炭", "石油石化", "环保", "美容护理"]);
-// 概念板块约 500 个、成分高度重叠（市值会重复计、与涨跌无必然关系），故概念维度面积改用 |涨跌幅|、
-// 也只取波动最大的前 N 个：让"涨跌离 0 越远、格子越大"，一眼看出今日最强/最弱概念。
-const CONCEPT_LIMIT = 60;
+// 概念板块约 500 个、成分高度重叠（市值与涨跌无必然关系）。整形成「涨幅榜前 N + 跌幅榜前 N」的
+// **均衡**集合：保证"全部"两侧都有（不会因当天单边行情而只剩一种颜色），「仅看上涨/下跌」各取一侧。
+const CONCEPT_PER_SIDE = 30;
 const absPct = (b) => Math.abs(b.pct == null ? 0 : b.pct);
-// 把东财原始板块列表按维度整形：行业→申万一级 31 个（面积=市值）；概念→|涨跌|最大的前 N 个（面积=|涨跌|）。
+// 把东财原始板块列表按维度整形：行业→申万一级 31 个（全集、不做涨跌筛选）；概念→涨/跌各前 N 的均衡集。
 function shapeBoards(dim, boards) {
-  if (dim === "concept") return [...boards].sort((a, b) => absPct(b) - absPct(a)).slice(0, CONCEPT_LIMIT);
+  if (dim === "concept") {
+    const up = boards.filter((b) => b.pct > 0).sort((a, b) => b.pct - a.pct).slice(0, CONCEPT_PER_SIDE);
+    const down = boards.filter((b) => b.pct < 0).sort((a, b) => a.pct - b.pct).slice(0, CONCEPT_PER_SIDE);
+    return up.concat(down);
+  }
   const sw1 = boards.filter((b) => SW1_NAMES.has(b.name));
   // 名称白名单依赖东财沿用申万一级板块名；若上游改名或取数缺页会少匹配、静默少画几格。
   // 数量偏离 31 时告警，让漂移可见（而非无声少格）。
@@ -1034,7 +1039,7 @@ function heatmapModuleHTML() {
     items.map((it) => `<button class="segment ${it.k === active ? "active" : ""}" data-${attr}="${it.k}">${it.label}</button>`).join("");
   return `
     <div class="home-heatmap-head">
-      <div class="hh-title"><strong>A股板块热力图</strong><span class="hh-sub">行业：面积=市值 · 概念：面积=涨跌幅度 · 颜色=涨跌（红涨绿跌）</span></div>
+      <div class="hh-title"><strong>A股板块热力图</strong><span class="hh-sub">面积=涨跌幅度（离 0 越远越大）· 颜色=涨跌（红涨绿跌）</span></div>
       <div class="heat-foot" id="heatFoot">板块行情加载中…</div>
     </div>
     <div class="heat-toolbar">
@@ -1147,9 +1152,8 @@ function drawHeatmap(reqHash) {
   }
   canvas.innerHTML = `<div id="heatChart" class="heat-chart"></div>`;
   heatChart = echarts.init(document.getElementById("heatChart"));
-  // 面积口径：行业=总市值（板块权重）；概念=|涨跌幅|（波动越大越大块）。
-  const dim = heatmapState.boardsDim;
-  const area = (b) => dim === "concept" ? Math.max(absPct(b), 0.01) : Math.max(b.cap || 1, 1);
+  // 面积口径：行业/概念统一 = |涨跌幅|（离 0 越远、格子越大）。市值仅作 tooltip 信息，不再决定面积。
+  const area = (b) => Math.max(absPct(b), 0.01);
   const data = list.map((b) => ({
     name: b.name, value: area(b), _b: b,
     itemStyle: { color: Core.heatmapColor(b.pct) },
