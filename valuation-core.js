@@ -199,45 +199,32 @@
   }
 
   // 板块热力图色阶：红涨绿跌。涨跌幅 pct → 单元格填充色。
-  // 关键——**在 HSL 里按方向固定色相**（涨=红 hue 5°、跌=绿 hue 150°），只随 |pct| 调饱和度/明度，
-  // 绝不在 RGB 里把红、绿两端跨通道线性混合（那样 0% 附近会混出橄榄/灰棕的"脏"中间色，正是旧版的毛病）。
-  // 这样涨格永远在红色族、跌格永远在绿色族，弱涨弱跌是低饱和的暗底、强涨强跌是高饱和的鲜色。
-  // |pct|≥maxAbs 截断到满档；pct 缺失/非法返回专用浅灰。纯函数、无副作用，浏览器与 Node 测试共用。
-  const HEAT_MISSING = "rgb(176,184,193)";
-  function hslToRgb(h, s, l) {
-    h = (h % 360) / 360;
-    const hue2rgb = (p, q, t) => {
-      if (t < 0) t += 1;
-      if (t > 1) t -= 1;
-      if (t < 1 / 6) return p + (q - p) * 6 * t;
-      if (t < 1 / 2) return q;
-      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-      return p;
-    };
-    let r, g, b;
-    if (s === 0) { r = g = b = l; }
-    else {
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-      r = hue2rgb(p, q, h + 1 / 3);
-      g = hue2rgb(p, q, h);
-      b = hue2rgb(p, q, h - 1 / 3);
-    }
-    return `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+  // **只用不透明度区分强弱**：单一纯红(涨)/纯绿(跌)，仅按 |pct| 改 alpha——绝不混色、不叠加、
+  // 不在通道间插值（那是旧版"脏"的根因）。淡到浓铺在白底上：近 0% 几乎透明、满档为纯色。
+  // |pct|≥maxAbs 截断；缺失/非法返回淡灰。配套 heatmapTextColor 据复合后亮度选黑/白字保证可读。
+  const HEAT_UP_RGB = [224, 82, 74];    // 红涨（与 --up #e0524a 同源）
+  const HEAT_DOWN_RGB = [42, 171, 107]; // 绿跌（与 --down #2bab6b 同源）
+  const HEAT_MISSING = "rgba(150,160,170,0.16)";
+  function heatAlpha(pct, span) {
+    const t = Math.min(Math.abs(Number(pct)) / span, 1); // 强度 0..1（满档截断）
+    return 0.16 + 0.84 * t;                              // 近 0 很淡 → 满档不透明
   }
   function heatmapColor(pct, maxAbs = 4) {
     if (pct == null || !Number.isFinite(Number(pct))) return HEAT_MISSING;
     const span = Number(maxAbs) > 0 ? Number(maxAbs) : 4;
-    const v = Number(pct);
-    const t = Math.min(Math.abs(v) / span, 1); // 强度 0..1（满档截断）
-    const up = v >= 0;
-    const h = up ? 4 : 150;                     // 红 / 绿，色相固定
-    // 饱和度从近 0（干净的暗中性灰，不发棕）陡升到满档鲜色——小波动是深灰、强涨跌才鲜明，
-    // 正是 finviz/东财热力图那种"暗底配亮色"的观感，避免低饱和红相变成脏脏的灰褐/紫褐。
-    const s = 0.05 + (up ? 0.78 : 0.70) * t;
-    const l = 0.36 - 0.05 * t;                  // 整体偏暗、强档更深，白字始终清晰
-    return hslToRgb(h, s, l);
+    const rgb = Number(pct) >= 0 ? HEAT_UP_RGB : HEAT_DOWN_RGB;
+    return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${heatAlpha(pct, span).toFixed(3)})`;
+  }
+  // 单元格 = 纯色 over 白底，复合后算感知亮度：淡格（高亮度）用深字、浓格（低亮度）用白字，
+  // 解决"特定不透明度背景下文字看不清"的问题。返回十六进制文字色。
+  function heatmapTextColor(pct, maxAbs = 4) {
+    if (pct == null || !Number.isFinite(Number(pct))) return "#1f2733";
+    const span = Number(maxAbs) > 0 ? Number(maxAbs) : 4;
+    const rgb = Number(pct) >= 0 ? HEAT_UP_RGB : HEAT_DOWN_RGB;
+    const a = heatAlpha(pct, span);
+    const lum = [0.299, 0.587, 0.114].reduce((sum, w, i) => sum + w * (rgb[i] * a + 255 * (1 - a)), 0);
+    return lum > 150 ? "#1f2733" : "#ffffff";
   }
 
-  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignPrevious, hasSeries, calculateDcaLevels, calculateTracking, heatmapColor };
+  return { analyze, semanticBands, quantile, sliceByRange, movingAverage, resampleSeries, alignPrevious, hasSeries, calculateDcaLevels, calculateTracking, heatmapColor, heatmapTextColor };
 });

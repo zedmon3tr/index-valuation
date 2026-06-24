@@ -243,25 +243,18 @@ a{color:inherit;text-decoration:none}
 .tracking-loading{color:var(--ink-3);font-size:13px}
 @media(max-width:640px){.tracking-card{margin:0 8px}.tracking-grid{grid-template-columns:1fr 1fr}}
 
-/* ---------- A股板块热力图 ---------- */
-/* 首页入口卡 */
-.heatmap-entry{display:flex;align-items:center;gap:14px;margin:8px 0 4px;padding:16px 18px;
-  background:linear-gradient(100deg,#fff,var(--brand-weak));border:1px solid var(--line);
-  border-radius:var(--radius);box-shadow:var(--shadow);cursor:pointer;transition:.15s}
-.heatmap-entry:hover{transform:translateY(-2px);border-color:#cfe0fb}
-.heatmap-entry .he-ico{font-size:24px;line-height:1}
-.heatmap-entry .he-text{display:flex;flex-direction:column}
-.heatmap-entry .he-text strong{font-size:16px}
-.heatmap-entry .he-text span{color:var(--ink-2);font-size:12.5px}
-.heatmap-entry .he-go{margin-left:auto;color:var(--brand);font-weight:700;white-space:nowrap}
-
-/* 工作台 */
-.heatmap-workspace,.board-workspace{margin:0 -20px;padding-bottom:36px}
-.heat-strip{align-items:center}
-.heat-search input{height:34px;border:1px solid var(--line-strong);border-radius:3px;background:var(--surface);color:var(--ink);padding:0 10px;font:inherit;min-width:140px}
-.heat-foot{margin-left:auto;color:var(--ink-3);font-size:12.5px;font-variant-numeric:tabular-nums}
+/* ---------- A股板块热力图（内嵌首页） ---------- */
+.home-heatmap{margin:16px 0 6px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
+.home-heatmap-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px}
+.hh-title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.hh-title strong{font-size:16px;font-weight:700}
+.hh-sub{color:var(--ink-3);font-size:12px}
+.heat-foot{margin-left:auto;color:var(--ink-3);font-size:12px;font-variant-numeric:tabular-nums}
 .heat-foot .up{color:var(--up)}.heat-foot .down{color:var(--down)}
-.heat-canvas{margin:14px 20px 0;height:640px;background:var(--surface);border:1px solid var(--line-2);border-radius:6px;box-shadow:var(--ws-shadow);overflow:hidden;position:relative}
+.heat-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0 0}
+.heat-toolbar .control-group{display:flex;align-items:center;gap:8px}
+.heat-search input{height:32px;border:1px solid var(--line-strong);border-radius:3px;background:var(--surface);color:var(--ink);padding:0 10px;font:inherit;min-width:130px}
+.heat-canvas{margin-top:12px;height:320px;background:#fff;border:1px solid var(--line-2);border-radius:8px;overflow:hidden;position:relative}
 .heat-chart{width:100%;height:100%}
 .heat-skeleton,.heat-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--ink-3);font-size:14px;text-align:center;padding:0 24px}
 
@@ -273,7 +266,16 @@ a{color:inherit;text-decoration:none}
 .heat-row .hr-cap{color:var(--ink-3);font-size:12.5px;font-variant-numeric:tabular-nums}
 .heat-row .hr-pct{font-weight:700;font-variant-numeric:tabular-nums;min-width:72px;text-align:right}
 
+/* 指数卡：名称 + 右上角市场 tag */
+.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.card-head .nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mkt-tag{flex:none;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;line-height:1.55}
+.mkt-a{background:#fdecea;color:#d23b30}
+.mkt-hk{background:#eee9fb;color:#6b4fd0}
+.mkt-us{background:#e8f1fd;color:#2b6fd6}
+
 /* 板块详情 */
+.board-workspace{margin:0 -20px;padding-bottom:36px}
 .board-chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px 18px;margin:6px 20px 0;padding:14px 16px;background:var(--surface);border:1px solid var(--line-2);border-radius:6px;box-shadow:var(--ws-shadow)}
 .board-chip{display:flex;flex-direction:column;gap:4px}
 .board-chip .bc-k{font-size:12px;color:var(--ink-3)}
@@ -282,11 +284,10 @@ a{color:inherit;text-decoration:none}
 .board-card{grid-template-columns:1fr}
 .board-chart{width:100%;height:520px}
 
-@media(max-width:960px){.heat-canvas{height:70vh}}
 @media(max-width:640px){
-  .heatmap-entry{margin:6px 0}
-  .heat-canvas{margin:10px 8px 0;height:66vh}
+  .home-heatmap{margin:10px 0 4px;padding:12px}
+  .heat-canvas{height:260px}
   .heat-foot{margin-left:0;width:100%}
   .board-chips{margin:6px 8px 0;grid-template-columns:1fr 1fr}
-  .board-card{margin:10px 8px 0}.board-chart{height:380px}
+  .board-card{grid-template-columns:1fr;margin:10px 8px 0}.board-chart{height:380px}
 }
