@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-26 12:12:57",
+  "generatedAt": "2026-06-27 11:26:21",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -87,12 +87,12 @@
       "name": "纳指ETF国泰",
       "secid": "1.513100",
       "trackIndex": "NDX",
-      "nav": 1.988,
-      "navRaw": "1.9881",
-      "navDate": "2026-06-24",
-      "estimate": 2.002,
-      "estimateChangePct": "0.72",
-      "estimateTime": "2026-06-26 04:00",
+      "nav": 2.003,
+      "navRaw": "2.0034",
+      "navDate": "2026-06-25",
+      "estimate": 1.983,
+      "estimateChangePct": "-1.04",
+      "estimateTime": "2026-06-27 04:00",
       "source": "eastmoney:fundgz"
     },
     {
@@ -139,13 +139,13 @@
       "name": "中证红利ETF招商",
       "secid": "1.515080",
       "trackIndex": "000922",
-      "nav": 1.452,
-      "navRaw": "1.4522",
-      "navDate": "2026-06-25",
-      "estimate": 1.421,
-      "estimateChangePct": "-2.17",
-      "estimateTime": "2026-06-26 15:00",
-      "source": "eastmoney:fundgz"
+      "nav": null,
+      "navRaw": null,
+      "navDate": null,
+      "estimate": null,
+      "estimateChangePct": null,
+      "estimateTime": null,
+      "source": "ERROR: URLError: <urlopen error _ssl.c:999: The handshake operation timed out>"
     },
     {
       "code": "512690",
@@ -192,11 +192,11 @@
       "secid": "1.513500",
       "trackIndex": "SPX",
       "nav": 2.374,
-      "navRaw": "2.3743",
-      "navDate": "2026-06-24",
-      "estimate": 2.377,
-      "estimateChangePct": "0.13",
-      "estimateTime": "2026-06-26 04:00",
+      "navRaw": "2.3744",
+      "navDate": "2026-06-25",
+      "estimate": 2.373,
+      "estimateChangePct": "-0.07",
+      "estimateTime": "2026-06-27 04:00",
       "source": "eastmoney:fundgz"
     }
   ]
