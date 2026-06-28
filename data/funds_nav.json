@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-27 11:26:21",
+  "generatedAt": "2026-06-28 11:36:52",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -139,13 +139,13 @@
       "name": "中证红利ETF招商",
       "secid": "1.515080",
       "trackIndex": "000922",
-      "nav": null,
-      "navRaw": null,
-      "navDate": null,
-      "estimate": null,
-      "estimateChangePct": null,
-      "estimateTime": null,
-      "source": "ERROR: URLError: <urlopen error _ssl.c:999: The handshake operation timed out>"
+      "nav": 1.452,
+      "navRaw": "1.4522",
+      "navDate": "2026-06-25",
+      "estimate": 1.421,
+      "estimateChangePct": "-2.17",
+      "estimateTime": "2026-06-26 15:00",
+      "source": "eastmoney:fundgz"
     },
     {
       "code": "512690",
@@ -194,8 +194,8 @@
       "nav": 2.374,
       "navRaw": "2.3744",
       "navDate": "2026-06-25",
-      "estimate": 2.373,
-      "estimateChangePct": "-0.07",
+      "estimate": 2.372,
+      "estimateChangePct": "-0.08",
       "estimateTime": "2026-06-27 04:00",
       "source": "eastmoney:fundgz"
     }
