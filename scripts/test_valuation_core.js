@@ -192,6 +192,12 @@ function approxEqual(actual, expected, message) {
   assert.strictEqual(Core.heatmapTextColor(4), "#ffffff", "满档浓格 → 白字");
   assert.strictEqual(Core.heatmapTextColor(-4), "#ffffff", "满档浓格(跌) → 白字");
   assert.strictEqual(Core.heatmapTextColor(null), "#1f2733", "缺失 → 深色字");
+  // 复合基底可传暗色画布（暗色主题）：淡格复合到暗底上整体偏暗 → 白字
+  const darkBase = [23, 30, 40];
+  assert.strictEqual(Core.heatmapTextColor(0.2, 4, darkBase), "#ffffff", "暗底淡格 → 白字");
+  assert.strictEqual(Core.heatmapTextColor(null, 4, darkBase), "#ffffff", "暗底缺失灰 → 白字");
+  assert.strictEqual(Core.heatmapTextColor(4, 4, darkBase), "#ffffff", "暗底满档浓格 → 白字");
+  assert.strictEqual(Core.heatmapTextColor(0.2, 4, "bogus"), "#1f2733", "非法 base 回退白底行为");
 }
 
 /* ---------- ema ---------- */

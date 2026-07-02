@@ -230,7 +230,19 @@ async function loadFundNavHist() {
   return fundNavHist;
 }
 
-/* ---------- 4. 格式化 ---------- */
+/* ---------- 4. 格式化 / 主题与文案辅助 ---------- */
+// UI 文案统一走 i18n.js 的字典（默认中文，可切英文）；t() 只翻界面文案，不翻数据。
+const t = window.I18N.t;
+// 读 design token（styles.css 的 --* 变量）——ECharts 不认 CSS 变量，画图时按当前主题取值。
+// 每次绘制现读（而非启动时缓存），主题切换后重绘自然拿到新色。
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// "#rrggbb" → [r,g,b]（热力图文字色需要画布底色的 RGB 复合基底）
+const hexToRgb = (hex) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return [255, 255, 255];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
 const fmt = (x, d = 3) => (x == null || !isFinite(x) ? "—" : x.toFixed(d));
 // 东财等外部接口返回的字符串（name/code/secid 等）转义后才能拼进 innerHTML，
 // 防止接口被污染或异常返回时注入脚本（本地主表 indexes.json/funds.json 是受信数据，无需转义）。
@@ -248,12 +260,15 @@ function routeHash() {
   return h === "" || h === "#" ? "#/" : h;
 }
 function router() {
+  // preserve flag 在这里统一消费：只有语言/主题切换触发的原地重渲染才为 true，
+  // 且只对详情页有意义；其他路由也要把它清掉，否则会漏到下一次进详情页（错保旧状态）。
+  const preserve = consumePreserveFlag();
   const hash = location.hash || "#/";
   const mIdx = hash.match(/^#\/idx\/(.+)$/);
   const mBoard = hash.match(/^#\/board\/(.+)$/);
   // 详情页 / 板块详情展开成宽幅工作台，首页保持窄容器（热力图已内嵌首页，无独立页面）。
   view.classList.toggle("view-wide", Boolean(mIdx || mBoard));
-  if (mIdx) renderDetail(decodeURIComponent(mIdx[1]));
+  if (mIdx) renderDetail(decodeURIComponent(mIdx[1]), preserve);
   else if (mBoard) renderBoard(decodeURIComponent(mBoard[1]));
   else renderHome();
 }
@@ -273,12 +288,12 @@ async function renderHome() {
     ? `<div class="section-title">${title}</div><div class="grid">${list.map(cardSkeleton).join("")}</div>` : "");
   view.innerHTML = `
     <section class="hero">
-      <h1>指数估值 · 行情分析</h1>
-      <p>搜索任意指数或基金（ETF），查看实时点位、涨跌，以及历史点位 / PE / PB / 股息率分位分析。</p>
+      <h1>${t("hero.title")}</h1>
+      <p>${t("hero.sub")}</p>
     </section>
     <section class="home-heatmap">${heatmapModuleHTML()}</section>
-    ${groupHTML("全球市场指数", indices)}
-    ${groupHTML("基金 / ETF", funds)}
+    ${groupHTML(t("home.indices"), indices)}
+    ${groupHTML(t("home.funds"), funds)}
   `;
   // 热力图：绑定控件并异步加载（不阻塞指数行情；echarts 就绪后再画）
   bindHeatmapControls(reqHash);
@@ -298,20 +313,22 @@ async function renderHome() {
       if (el) el.innerHTML = cardBody(p, d);
     });
   } catch (e) {
-    document.querySelectorAll(".card .skeleton").forEach((s) => (s.textContent = "行情加载失败"));
+    document.querySelectorAll(".card .skeleton").forEach((s) => (s.textContent = t("home.quoteFailed")));
   }
 }
 // 市场 tag：A股/港股/美股 用不同颜色小标签；基金（市场="基金 / ETF"）已单独成组、不标。
+// 主表 market 字段固定中文（"A股"等），这里映射到样式类与译文（英文界面显示 CN/HK/US）。
 function marketTag(market) {
   const k = { "A股": "a", "港股": "hk", "美股": "us" }[market];
-  return k ? `<span class="mkt-tag mkt-${k}">${market}</span>` : "";
+  const label = { a: t("market.cn"), hk: t("market.hk"), us: t("market.us") }[k];
+  return k ? `<span class="mkt-tag mkt-${k}">${label}</span>` : "";
 }
 function cardSkeleton(p) {
   return `<div class="card" id="c-${p.secid.replace(".", "_")}" onclick="location.hash='#/idx/${p.secid}'">${cardBody(p, null)}</div>`;
 }
 function cardBody(p, d) {
   const head = `<div class="card-head"><span class="nm">${escapeHtml((d && d.name) || p.name)}</span>${marketTag(p.market)}</div><div class="cd">${p.code}</div>`;
-  if (!d) return `${head}<div class="px"><span class="skeleton">加载中…</span></div>`;
+  if (!d) return `${head}<div class="px"><span class="skeleton">${t("common.loading")}</span></div>`;
   return `${head}
     <div class="px">
       <span class="price">${fmt(d.price)}</span>
@@ -322,27 +339,26 @@ function cardBody(p, d) {
 /* ---------- 8. 详情页 ---------- */
 const klineCache = {};
 let chart = null;
+// 文案统一在渲染时经 t("range.<k>") / t("period.<k>") / mtx() 取当前语言。
 const RANGES = [
-  { k: "1Y", label: "1年", days: 365 },
-  { k: "3Y", label: "3年", days: 365 * 3 },
-  { k: "5Y", label: "5年", days: 365 * 5 },
-  { k: "10Y", label: "10年", days: 365 * 10 },
-  { k: "ALL", label: "上市以来", days: 1e9 },
-  { k: "CUSTOM", label: "自定义", days: null },
+  { k: "1Y", days: 365 },
+  { k: "3Y", days: 365 * 3 },
+  { k: "5Y", days: 365 * 5 },
+  { k: "10Y", days: 365 * 10 },
+  { k: "ALL", days: 1e9 },
+  { k: "CUSTOM", days: null },
 ];
 // 周期：日/周/月。周线=每周最后一个交易日值、月线=每月最后一个交易日值
 // （见 valuation-core.js resampleSeries 的分桶取末值规则）。
-const PERIODS = [
-  { k: "D", label: "日" },
-  { k: "W", label: "周" },
-  { k: "M", label: "月" },
-];
+const PERIODS = [{ k: "D" }, { k: "W" }, { k: "M" }];
 const METRICS = {
-  close: { label: "指数点位", short: "点位", current: "当前点位" },
-  pe: { label: "市盈率 TTM", short: "市盈率", current: "当前 PE" },
-  pb: { label: "市净率 LF", short: "市净率", current: "当前 PB" },
-  dy: { label: "股息率", short: "股息率", current: "当前股息率", unit: "%", higherIsBetter: true },
+  close: { key: "close" },
+  pe: { key: "pe" },
+  pb: { key: "pb" },
+  dy: { key: "dy", unit: "%", higherIsBetter: true },
 };
+// 指标文案：mtx(metric, "label"|"short"|"current") → 当前语言文本
+const mtx = (metric, field) => t(`metric.${metric.key}.${field}`);
 const detailState = {
   range: "10Y",
   metric: "close",
@@ -364,6 +380,30 @@ const dcaState = {
 };
 const DCA_MAX_COUNT = 60;
 
+// 语言/主题切换会原地重渲染当前页（rerenderForPrefs → router）。这个一次性 flag 让
+// renderDetail 跳过状态重置、并在渲染后把控件回放到 detailState/dcaState 的当前值。
+let preserveDetailStateOnce = false;
+function consumePreserveFlag() {
+  const v = preserveDetailStateOnce;
+  preserveDetailStateOnce = false;
+  return v;
+}
+// 详情页模板默认渲染"统计视图 + 分位线开"，preserve 重渲染后按 state 回放二级控件。
+// （时间范围/周期/指标的 active 态已由模板按 detailState 输出，无需在此处理。）
+function syncDetailControls() {
+  document.querySelectorAll("#viewTabs .segment").forEach((item) => item.classList.toggle("active", item.dataset.view === detailState.view));
+  document.getElementById("statsView").hidden = detailState.view !== "stats";
+  document.getElementById("dcaCalculator").hidden = detailState.view !== "stats";
+  document.getElementById("tableView").hidden = detailState.view !== "table";
+  document.getElementById("quantileToggle").checked = detailState.showQuantiles;
+  document.getElementById("stdToggle").checked = detailState.showStd;
+  document.getElementById("bandToggle").checked = detailState.showBand;
+  document.getElementById("maSelect").value = String(detailState.ma);
+  document.getElementById("customRange").hidden = detailState.range !== "CUSTOM";
+  document.getElementById("customStart").value = detailState.customStart;
+  document.getElementById("customEnd").value = detailState.customEnd;
+}
+
 // 顶部实时行情区的 HTML。quote 有值显示价格；为空时按是否仍在加载显示「加载中」或「不可用」。
 function marketQuoteHTML(quote, pending) {
   if (quote && quote.price != null) {
@@ -372,18 +412,18 @@ function marketQuoteHTML(quote, pending) {
     return `<strong class="${cls(quote.pct)}">${fmt(quote.price)}</strong>
           <span class="${cls(quote.pct)}">${fmtPct(quote.pct)}${chg}</span>`;
   }
-  return `<span class="quote-pending">${pending ? "实时行情加载中…" : "行情快照暂不可用"}</span>`;
+  return `<span class="quote-pending">${pending ? t("quote.pending") : t("quote.unavailable")}</span>`;
 }
 function updateMarketQuote(quote) {
   const el = document.getElementById("marketQuote");
   if (el) el.innerHTML = marketQuoteHTML(quote, false);
 }
 
-async function renderDetail(secid) {
+async function renderDetail(secid, preserve) {
   const reqHash = location.hash;
   const known = POPULAR.find((p) => p.secid === secid);
   const fund = FUNDS.find((f) => f.secid === secid);
-  view.innerHTML = `<div class="loading">加载中…</div>`;
+  view.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
 
   // 实时行情 + K 线（push2，可能很慢甚至失败）：后台拉取，绝不阻塞首屏渲染。
   const livePromise = Promise.all([
@@ -415,71 +455,74 @@ async function renderDetail(secid) {
   klineCache[secid] = kdata && kdata.rows && kdata.rows.length ? kdata : { rows: [] };
   const hasPoint = !!(val && Core.hasSeries(val.close)) || klineCache[secid].rows.length > 0;
   if (!hasPoint && !hasVal) {
-    view.innerHTML = `<div class="error">未找到该标的的历史数据，且实时行情接口暂时不可用，请稍后重试。<br><a class="back" href="#/">返回首页</a></div>`;
+    view.innerHTML = `<div class="error">${t("detail.notFound")}<br><a class="back" href="#/">${t("backLink.home")}</a></div>`;
     return;
   }
   // 优先默认显示估值指标（点位会作为叠加线始终展示）；仅有点位数据的指数才默认点位。
-  const defaultMetric = (val && Core.hasSeries(val.pe)) ? "pe" : (val && Core.hasSeries(val.pb)) ? "pb" : (val && Core.hasSeries(val.dy)) ? "dy" : "close";
-  Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "W", ma: 0, view: "stats", showQuantiles: true, showStd: false, showBand: false, customStart: "", customEnd: "" });
+  // 语言/主题切换触发的原地重渲染（preserve，由 router 传入）保留用户当前筛选状态，不回到默认。
+  if (!preserve) {
+    const defaultMetric = (val && Core.hasSeries(val.pe)) ? "pe" : (val && Core.hasSeries(val.pb)) ? "pb" : (val && Core.hasSeries(val.dy)) ? "dy" : "close";
+    Object.assign(detailState, { range: "10Y", metric: defaultMetric, period: "W", ma: 0, view: "stats", showQuantiles: true, showStd: false, showBand: false, customStart: "", customEnd: "" });
+  }
 
   view.innerHTML = `
     <section class="detail-workspace">
       <div class="analysis-toolbar">
         <div class="control-row">
           <div class="control-group range-control">
-            <span class="control-label">时间范围</span>
+            <span class="control-label">${t("toolbar.range")}</span>
             <div class="segmented" id="rangeTabs">
-              ${RANGES.map((r) => `<button class="segment ${r.k === detailState.range ? "active" : ""}" data-range="${r.k}">${r.label}</button>`).join("")}
+              ${RANGES.map((r) => `<button class="segment ${r.k === detailState.range ? "active" : ""}" data-range="${r.k}">${t("range." + r.k)}</button>`).join("")}
             </div>
           </div>
           <div class="control-group period-control">
-            <span class="control-label">周期</span>
+            <span class="control-label">${t("toolbar.period")}</span>
             <div class="segmented" id="periodTabs">
-              ${PERIODS.map((p) => `<button class="segment ${p.k === detailState.period ? "active" : ""}" data-period="${p.k}">${p.label}</button>`).join("")}
+              ${PERIODS.map((p) => `<button class="segment ${p.k === detailState.period ? "active" : ""}" data-period="${p.k}">${t("period." + p.k)}</button>`).join("")}
             </div>
           </div>
           <div class="control-group metric-control">
-            <span class="control-label">估值指标</span>
+            <span class="control-label">${t("toolbar.metric")}</span>
             <div class="segmented" id="metricTabs"></div>
           </div>
         </div>
         <div class="control-row secondary-controls">
           <div class="segmented view-switch" id="viewTabs">
-            <button class="segment active" data-view="stats">统计分析</button>
-            <button class="segment" data-view="table">明细数据</button>
+            <button class="segment active" data-view="stats">${t("view.stats")}</button>
+            <button class="segment" data-view="table">${t("view.table")}</button>
           </div>
-          <label class="toggle-control"><input id="quantileToggle" type="checkbox" checked><span>分位线</span></label>
-          <label class="toggle-control"><input id="stdToggle" type="checkbox"><span>标准差</span></label>
-          <label class="toggle-control"><input id="bandToggle" type="checkbox"><span>通道带</span></label>
-          <label class="select-control"><span>移动平均</span><select id="maSelect"><option value="0">无</option><option value="20">20期</option><option value="60">60期</option><option value="120">120期</option></select></label>
+          <label class="toggle-control"><input id="quantileToggle" type="checkbox" checked><span>${t("toggle.quantiles")}</span></label>
+          <label class="toggle-control"><input id="stdToggle" type="checkbox"><span>${t("toggle.std")}</span></label>
+          <label class="toggle-control"><input id="bandToggle" type="checkbox"><span>${t("toggle.band")}</span></label>
+          <label class="select-control"><span>${t("toolbar.ma")}</span><select id="maSelect"><option value="0">${t("ma.none")}</option><option value="20">${t("ma.n", { n: 20 })}</option><option value="60">${t("ma.n", { n: 60 })}</option><option value="120">${t("ma.n", { n: 120 })}</option></select></label>
           <div class="custom-range" id="customRange" hidden>
-            <input id="customStart" type="date" aria-label="开始日期">
-            <span>至</span>
-            <input id="customEnd" type="date" aria-label="结束日期">
+            <input id="customStart" type="date" aria-label="${t("custom.start")}">
+            <span>${t("custom.to")}</span>
+            <input id="customEnd" type="date" aria-label="${t("custom.end")}">
           </div>
         </div>
       </div>
 
-      ${hasPoint ? "" : `<div class="feed-notice">实时行情接口（东方财富）暂时不可用，「指数点位」已置灰，仅展示历史 PE / PB / 股息率分位分析。</div>`}
-      ${fund ? `<div class="feed-notice">「${name}」是 ETF，下方估值分位 / 机会线基于其跟踪指数 <b>${trackName}（${fund.trackIndex}）</b>；上方为基金自身实时价格。</div>` : ""}
-      ${fund ? `<section class="tracking-card" id="trackingCard" aria-label="跟踪关联"><div class="tracking-loading">跟踪数据加载中…</div></section>` : ""}
+      ${hasPoint ? "" : `<div class="feed-notice">${t("feed.noPoint")}</div>`}
+      ${fund ? `<div class="feed-notice">${t("feed.fund", { name, track: trackName, code: fund.trackIndex })}</div>` : ""}
+      ${fund ? `<section class="tracking-card" id="trackingCard" aria-label="${t("tracking.title")}"><div class="tracking-loading">${t("tracking.loading")}</div></section>` : ""}
 
       <div class="instrument-strip">
         <div>
-          <a class="back" href="#/">‹ 返回${fund ? "首页" : "指数列表"}</a>
-          <div class="instrument-title"><strong>${name}</strong><span>${escapeHtml(code)} · ${escapeHtml(secid)}</span></div>
+          <a class="back" href="#/">${fund ? t("back.home") : t("back.list")}</a>
+          <div class="instrument-title"><strong>${name}</strong>${marketTag((known && known.market) || (fund && fund.market) || "")}<span class="instrument-code">${escapeHtml(code)}</span></div>
         </div>
         <div class="market-quote" id="marketQuote">${marketQuoteHTML(quote, renderedFromLocal)}</div>
       </div>
 
       <div class="analysis-card" id="statsView">
         <aside class="stats-pane">
-          <div class="pane-title" id="statsTitle">统计概览</div>
+          <div class="pane-title" id="statsTitle">${t("stats.title")}</div>
           <div class="stats" id="stats"></div>
         </aside>
         <div class="chart-pane">
           <div class="chart-heading">
-            <div><strong id="chartTitle">指数点位</strong><span id="coverageBadge"></span></div>
+            <div><strong id="chartTitle">${t("metric.close.label")}</strong><span id="coverageBadge"></span></div>
             <span class="source-note" id="sourceNote"></span>
           </div>
           <div class="pct-badge" id="pctBadge"></div>
@@ -490,22 +533,22 @@ async function renderDetail(secid) {
       <section class="dca-card" id="dcaCalculator" aria-labelledby="dcaTitle">
         <div class="dca-heading">
           <div>
-            <strong id="dcaTitle">定投点位</strong>
-            <span>按上一次买入点位继续下跌计算</span>
+            <strong id="dcaTitle">${t("dca.title")}</strong>
+            <span>${t("dca.sub")}</span>
           </div>
-          <button class="reset-button" id="dcaReset" type="button">重置</button>
+          <button class="reset-button" id="dcaReset" type="button">${t("dca.reset")}</button>
         </div>
         <div class="dca-controls">
           <label>
-            <span>初次买入点位</span>
-            <input id="dcaInitialPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="输入点位">
+            <span>${t("dca.initial")}</span>
+            <input id="dcaInitialPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="${t("dca.initialPh")}">
           </label>
           <label>
-            <span>定投次数</span>
+            <span>${t("dca.count")}</span>
             <input id="dcaCount" type="number" min="1" max="60" step="1" inputmode="numeric" value="10">
           </label>
           <label>
-            <span>每次跌幅</span>
+            <span>${t("dca.drop")}</span>
             <div class="suffix-input">
               <input id="dcaDropPct" type="number" min="0.01" max="99.99" step="0.01" inputmode="decimal" value="4">
               <span>%</span>
@@ -514,21 +557,22 @@ async function renderDetail(secid) {
         </div>
         <div class="dca-table-wrap">
           <table class="dca-table">
-            <thead><tr><th>次数</th><th>买入点位</th><th>较上次下跌</th><th>较首次下跌</th></tr></thead>
+            <thead><tr><th>${t("dca.round")}</th><th>${t("dca.buyLevel")}</th><th>${t("dca.fromPrev")}</th><th>${t("dca.fromFirst")}</th></tr></thead>
             <tbody id="dcaRows"></tbody>
           </table>
-          <div class="dca-empty" id="dcaEmpty">输入初次买入点位后，会自动生成 10 个买入点位。</div>
+          <div class="dca-empty" id="dcaEmpty">${t("dca.empty")}</div>
         </div>
       </section>
       <div class="table-card" id="tableView" hidden>
-        <div class="table-heading"><strong id="tableTitle">明细数据</strong><span id="tableCount"></span></div>
-        <div class="table-scroll"><table><thead><tr><th>日期</th><th id="metricColumn">指标值</th><th>指数点位</th><th>相对前值</th></tr></thead><tbody id="detailRows"></tbody></table></div>
+        <div class="table-heading"><strong id="tableTitle">${t("table.titleDefault")}</strong><span id="tableCount"></span></div>
+        <div class="table-scroll"><table><thead><tr><th>${t("table.date")}</th><th id="metricColumn">${t("table.value")}</th><th>${t("table.point")}</th><th>${t("table.change")}</th></tr></thead><tbody id="detailRows"></tbody></table></div>
       </div>
     </section>
   `;
 
   bindDetailControls(secid, quote);
-  bindDcaCalculator();
+  bindDcaCalculator(preserve);
+  if (preserve) syncDetailControls();
   buildMetricTabs(secid, quote, val);
   // 进入详情页才按需加载 echarts；失败不致命，renderChart 会降级，统计/明细照常可用。
   await loadECharts().catch(() => {});
@@ -587,13 +631,13 @@ function bindDetailControls(secid, quote) {
   document.getElementById("customEnd").onchange = (event) => { detailState.customEnd = event.target.value; redraw(); };
 }
 
-function bindDcaCalculator() {
+function bindDcaCalculator(preserve) {
   const initialInput = document.getElementById("dcaInitialPrice");
   const countInput = document.getElementById("dcaCount");
   const dropInput = document.getElementById("dcaDropPct");
   const resetButton = document.getElementById("dcaReset");
   if (!initialInput || !countInput || !dropInput || !resetButton) return;
-  Object.assign(dcaState, { initialPrice: null, count: 10, dropPct: 4 });
+  if (!preserve) Object.assign(dcaState, { initialPrice: null, count: 10, dropPct: 4 });
   const normalizeCountInput = () => {
     const count = Math.floor(Number(countInput.value));
     return Number.isFinite(count) ? Math.max(1, Math.min(DCA_MAX_COUNT, count)) : null;
@@ -607,9 +651,9 @@ function bindDcaCalculator() {
     dcaState.dropPct = parseNumber(dropInput.value);
     renderDcaRows();
   };
-  initialInput.value = "";
-  countInput.value = "10";
-  dropInput.value = "4";
+  initialInput.value = preserve && dcaState.initialPrice != null ? String(dcaState.initialPrice) : "";
+  countInput.value = preserve && dcaState.count != null ? String(dcaState.count) : "10";
+  dropInput.value = preserve && dcaState.dropPct != null ? String(dcaState.dropPct) : "4";
   [initialInput, countInput, dropInput].forEach((input) => input.addEventListener("input", sync));
   resetButton.addEventListener("click", () => {
     initialInput.value = "";
@@ -629,7 +673,7 @@ function renderDcaRows() {
   emptyEl.hidden = levels.length > 0;
   rowsEl.innerHTML = levels.map((level) => `
     <tr>
-      <td>第 ${level.round} 次</td>
+      <td>${t("dca.roundN", { n: level.round })}</td>
       <td>${fmt(level.price)}</td>
       <td>${level.round === 1 ? "—" : "-" + level.dropFromPreviousPct.toFixed(2) + "%"}</td>
       <td>${level.round === 1 ? "—" : "-" + level.dropFromInitialPct.toFixed(2) + "%"}</td>
@@ -651,7 +695,7 @@ function buildMetricTabs(secid, quote, val) {
   box.innerHTML = ["pe", "pb", "dy"].map((m) => {
     const on = avail[m];
     const active = on && m === detailState.metric ? " active" : "";
-    return `<button class="segment${active}" data-metric="${m}"${on ? "" : ' disabled title="暂无数据"'}>${METRICS[m].short}</button>`;
+    return `<button class="segment${active}" data-metric="${m}"${on ? "" : ` disabled title="${t("metric.noData")}"`}>${mtx(METRICS[m], "short")}</button>`;
   }).join("");
   box.onclick = (event) => {
     const target = event.target.closest("[data-metric]");
@@ -741,26 +785,26 @@ function secid_to_code(secid) {
 
 function renderStats(stats, metric) {
   const box = document.getElementById("stats");
-  document.getElementById("statsTitle").textContent = "统计概览";
+  document.getElementById("statsTitle").textContent = t("stats.title");
   if (!stats) {
-    box.innerHTML = `<div class="empty-state">所选区间没有可用数据</div>`;
+    box.innerHTML = `<div class="empty-state">${t("stats.empty")}</div>`;
     return;
   }
   const value = (number) => fmt(number) + (metric.unit || "");
   const bands = Core.semanticBands(stats, metric.higherIsBetter);
   box.innerHTML = `
-    <div class="row primary"><span class="k">${metric.current}</span><span class="v">${value(stats.current)}</span></div>
-    <div class="row primary"><span class="k">历史分位</span><span class="v">${stats.percentile.toFixed(2)}%</span></div>
-    <div class="row"><span class="k"><span class="line-key danger"></span>危险值 (${metric.higherIsBetter ? "20" : "80"}%)</span><span class="v">${value(bands.danger)}</span></div>
-    <div class="row"><span class="k"><span class="line-key median"></span>中位数 (50%)</span><span class="v">${value(stats.median)}</span></div>
-    <div class="row"><span class="k"><span class="line-key chance"></span>机会值 (${metric.higherIsBetter ? "80" : "20"}%)</span><span class="v">${value(bands.chance)}</span></div>
-    <div class="row divider"><span class="k">最大值</span><span class="v">${value(stats.max)}</span></div>
-    <div class="row"><span class="k">平均值</span><span class="v">${value(stats.mean)}</span></div>
-    <div class="row"><span class="k">最小值</span><span class="v">${value(stats.min)}</span></div>
-    <div class="row"><span class="k">标准差 (+1)</span><span class="v">${value(stats.stdUpper)}</span></div>
-    <div class="row"><span class="k">标准差 (-1)</span><span class="v">${value(stats.stdLower)}</span></div>
-    <div class="row"><span class="k">标准差</span><span class="v">${value(stats.std)}</span></div>
-    <div class="row"><span class="k">z 分数</span><span class="v">${fmt(stats.z)}</span></div>
+    <div class="row primary"><span class="k">${mtx(metric, "current")}</span><span class="v">${value(stats.current)}</span></div>
+    <div class="row primary"><span class="k">${t("stats.percentile")}</span><span class="v">${stats.percentile.toFixed(2)}%</span></div>
+    <div class="row"><span class="k"><span class="line-key danger"></span>${t("stats.danger", { p: metric.higherIsBetter ? 20 : 80 })}</span><span class="v">${value(bands.danger)}</span></div>
+    <div class="row"><span class="k"><span class="line-key median"></span>${t("stats.median")}</span><span class="v">${value(stats.median)}</span></div>
+    <div class="row"><span class="k"><span class="line-key chance"></span>${t("stats.chance", { p: metric.higherIsBetter ? 80 : 20 })}</span><span class="v">${value(bands.chance)}</span></div>
+    <div class="row divider"><span class="k">${t("stats.max")}</span><span class="v">${value(stats.max)}</span></div>
+    <div class="row"><span class="k">${t("stats.mean")}</span><span class="v">${value(stats.mean)}</span></div>
+    <div class="row"><span class="k">${t("stats.min")}</span><span class="v">${value(stats.min)}</span></div>
+    <div class="row"><span class="k">${t("stats.stdUpper")}</span><span class="v">${value(stats.stdUpper)}</span></div>
+    <div class="row"><span class="k">${t("stats.stdLower")}</span><span class="v">${value(stats.stdLower)}</span></div>
+    <div class="row"><span class="k">${t("stats.std")}</span><span class="v">${value(stats.std)}</span></div>
+    <div class="row"><span class="k">${t("stats.z")}</span><span class="v">${fmt(stats.z)}</span></div>
   `;
 }
 
@@ -772,16 +816,16 @@ function renderPctBadge(stats, metric) {
   // 估值类（PE/PB）分位越高越贵；股息率越高越好；点位无估值含义，只描述高低位。
   let verdict, color;
   if (metric.higherIsBetter) {                // 股息率
-    verdict = zone === "high" ? "股息偏高" : zone === "low" ? "股息偏低" : "股息适中";
+    verdict = t(`verdict.dy.${zone}`);
     color = zone === "high" ? "var(--chance)" : zone === "low" ? "var(--danger)" : "var(--median)";
-  } else if (metric.short === "点位") {        // 指数点位
-    verdict = zone === "high" ? "处于历史高位" : zone === "low" ? "处于历史低位" : "处于历史中位";
+  } else if (metric.key === "close") {         // 指数点位
+    verdict = t(`verdict.close.${zone}`);
     color = zone === "high" ? "var(--danger)" : zone === "low" ? "var(--chance)" : "var(--median)";
   } else {                                     // 市盈率 / 市净率
-    verdict = zone === "high" ? "估值偏高" : zone === "low" ? "估值偏低" : "估值合理";
+    verdict = t(`verdict.val.${zone}`);
     color = zone === "high" ? "var(--danger)" : zone === "low" ? "var(--chance)" : "var(--median)";
   }
-  box.innerHTML = `当前${metric.short} <b style="color:${color}">${verdict}</b> · 历史分位 ${p.toFixed(1)}%`;
+  box.innerHTML = t("badge.text", { short: mtx(metric, "short"), color, verdict, p: p.toFixed(1) });
 }
 
 // 估值状态语义：与 renderPctBadge 同口径（PE/PB 越高越贵）
@@ -789,7 +833,7 @@ function valuationVerdict(stats) {
   if (!stats) return { text: "—", color: "var(--ink-3)" };
   const p = Math.max(0, Math.min(100, stats.percentile));
   const zone = p >= 80 ? "high" : p <= 20 ? "low" : "mid";
-  const text = zone === "high" ? "偏高估" : zone === "low" ? "偏低估" : "估值合理";
+  const text = t(`verdict.tk.${zone}`);
   const color = zone === "high" ? "var(--danger)" : zone === "low" ? "var(--chance)" : "var(--median)";
   return { text, color, pct: p };
 }
@@ -812,48 +856,49 @@ async function renderTrackingCard(fund, val, reqHash) {
     ? `<b style="color:${verdict.color}">${verdict.text}</b>`
     : `<b class="tk-muted">—</b>`;
   const verdictLabel = vKind && vStats
-    ? `指数估值 (${vKind} 分位 ${verdict.pct != null ? verdict.pct.toFixed(1) + "%" : "—"})`
-    : "指数估值";
+    ? t("tk.valuationPct", { kind: vKind, p: verdict.pct != null ? verdict.pct.toFixed(1) + "%" : "—" })
+    : t("tk.valuation");
 
   // 2) 溢价率：基金实时市价 vs 盘中估值(IOPV≈estimate)。市价由 refreshPremium 后台补；
   //    这里先放占位。快照里连 estimate(IOPV) 都没有才直接「暂不可用」置灰。
   const snap = await loadFundNav();
   const s = snap && snap[fund.code];
   const premiumHTML = (s && s.estimate != null)
-    ? `<b id="trackPremium" class="tk-muted">加载中…</b>`
-    : `<b id="trackPremium" class="tk-muted">暂不可用</b>`;
+    ? `<b id="trackPremium" class="tk-muted">${t("common.loading")}</b>`
+    : `<b id="trackPremium" class="tk-muted">${t("tk.na")}</b>`;
 
   // 3) 跟踪误差（净值历史 × 指数 close）；无 close 或无净值历史则置灰
   const histAll = await loadFundNavHist();
   const h = histAll && histAll[fund.code];
   let teHTML;
   if (h && h.navDates && h.nav && h.nav.length > 0 && val && Core.hasSeries(val.close)) {
-    const t = Core.calculateTracking(h.navDates, h.nav, val.dates, val.close, { years: 1 });
-    if (t) {
-      const devKlass = t.deviation >= 0 ? "up" : "down";
-      teHTML = `<b>${(t.annualizedTE * 100).toFixed(2)}%</b>`
-        + `<span class="te-dev">近1年偏离 <i class="${devKlass}">${t.deviation >= 0 ? "+" : ""}${(t.deviation * 100).toFixed(2)}%</i></span>`;
+    // 变量名避开 trk→t：全局 t() 是翻译函数，这里若命名 t 会把它遮蔽
+    const trk = Core.calculateTracking(h.navDates, h.nav, val.dates, val.close, { years: 1 });
+    if (trk) {
+      const devKlass = trk.deviation >= 0 ? "up" : "down";
+      teHTML = `<b>${(trk.annualizedTE * 100).toFixed(2)}%</b>`
+        + `<span class="te-dev">${t("tk.teDev")} <i class="${devKlass}">${trk.deviation >= 0 ? "+" : ""}${(trk.deviation * 100).toFixed(2)}%</i></span>`;
     } else {
-      teHTML = `<b class="tk-muted">数据不足</b>`;
+      teHTML = `<b class="tk-muted">${t("tk.insufficient")}</b>`;
     }
   } else {
     // 缺指数历史点位(如纳指/标普无静态 close)或缺基金净值历史，两种情况统一置灰
-    teHTML = `<b class="tk-muted">暂不可用</b>`;
+    teHTML = `<b class="tk-muted">${t("tk.na")}</b>`;
   }
 
   // 4) 点位占位：先用静态 close 末值 + 「快照」标签；refreshTrackPoint 后台补实时值
   const lastClose = val && Core.hasSeries(val.close) ? val.close[val.close.length - 1] : null;
   const pointHTML = lastClose != null
-    ? `<span id="trackPoint">${fmt(lastClose)} <span class="point-tag">快照</span></span>`
+    ? `<span id="trackPoint">${fmt(lastClose)} <span class="point-tag">${t("tk.snapshot")}</span></span>`
     : `<span id="trackPoint" class="tk-muted">—</span>`;
 
   // 上面 await 期间用户可能已切到别的标的；与 renderDetail 同款守卫，避免把本卡片写进别人页面
   if (reqHash && location.hash !== reqHash) return;
   box.innerHTML = `
-    <div class="tracking-title">跟踪关联</div>
+    <div class="tracking-title">${t("tracking.title")}</div>
     <div class="tracking-grid">
       <div class="tk-cell">
-        <span class="tk-k">追踪指数</span>
+        <span class="tk-k">${t("tk.index")}</span>
         <span class="tk-v">${idxSecid ? `<a href="#/idx/${idxSecid}">${idxName}</a>` : idxName} <i class="tk-code">${fund.trackIndex}</i></span>
       </div>
       <div class="tk-cell">
@@ -861,15 +906,15 @@ async function renderTrackingCard(fund, val, reqHash) {
         <span class="tk-v">${verdictHTML}</span>
       </div>
       <div class="tk-cell">
-        <span class="tk-k">指数当前点位</span>
+        <span class="tk-k">${t("tk.point")}</span>
         <span class="tk-v">${pointHTML}</span>
       </div>
       <div class="tk-cell">
-        <span class="tk-k">溢价率(实时)</span>
+        <span class="tk-k">${t("tk.premium")}</span>
         <span class="tk-v">${premiumHTML}</span>
       </div>
       <div class="tk-cell tk-te">
-        <span class="tk-k">近1年跟踪误差(年化)</span>
+        <span class="tk-k">${t("tk.te")}</span>
         <span class="tk-v">${teHTML}</span>
       </div>
     </div>`;
@@ -902,25 +947,24 @@ async function refreshPremium(fund, reqHash) {
   if (!q || q.price == null) { el.textContent = "—"; el.className = "tk-muted"; return; }
   const prem = (q.price - s.estimate) / s.estimate * 100;
   el.className = prem > 0 ? "up" : prem < 0 ? "down" : "flat";
-  el.innerHTML = `${prem >= 0 ? "溢价 " : "折价 "}${Math.abs(prem).toFixed(2)}%`;
+  el.innerHTML = t(prem >= 0 ? "tk.premiumUp" : "tk.premiumDown", { x: Math.abs(prem).toFixed(2) });
 }
 
 function renderCoverage(series, metric, source) {
   const first = series.dates[0];
   const last = series.dates[series.dates.length - 1];
-  document.getElementById("chartTitle").textContent = metric.label;
-  document.getElementById("coverageBadge").textContent = first ? `${first} 至 ${last}` : "无数据";
-  document.getElementById("sourceNote").textContent = source ? `来源 ${source}` : "来源 东方财富";
-  const note = metric.note ? ` · ${metric.note}` : "";
+  document.getElementById("chartTitle").textContent = mtx(metric, "label");
+  document.getElementById("coverageBadge").textContent = first ? t("coverage.range", { first, last }) : t("coverage.none");
+  document.getElementById("sourceNote").textContent = t("source.label", { s: source || t("source.default") });
   document.getElementById("snapNote").textContent = first
-    ? `样本 ${series.values.length} 条 · 实际覆盖 ${first} 至 ${last} · 分位统计仅基于当前筛选后的有效序列${note}`
-    : "所选区间没有有效样本";
+    ? t("snap.note", { n: series.values.length, first, last })
+    : t("snap.empty");
 }
 
 function renderDetailTable(series, pointValues, metric) {
-  document.getElementById("tableTitle").textContent = `${metric.label}明细`;
-  document.getElementById("tableCount").textContent = `${series.values.length} 条`;
-  document.getElementById("metricColumn").textContent = metric.label;
+  document.getElementById("tableTitle").textContent = t("table.title", { label: mtx(metric, "label") });
+  document.getElementById("tableCount").textContent = t("table.count", { n: series.values.length });
+  document.getElementById("metricColumn").textContent = mtx(metric, "label");
   const rows = series.dates.map((date, index) => {
     const current = series.values[index];
     const previous = index ? series.values[index - 1] : null;
@@ -937,9 +981,10 @@ function renderDetailTable(series, pointValues, metric) {
 // 每条带 = EMA(最高价, hi) 为上轨、EMA(最低价, lo) 为下轨，两线间填充极透明同色。
 // 跟随「指数点位」价格线叠加（与之同轴），需勾选「通道带」开关 + 实时 K 线已就绪(提供
 // 每根高/低价)；K 线未到则静默不画。周/月级由日线高低价重采样。
+// 颜色走 design token（--chart-band-*），绘制时经 cssVar 取当前主题值。
 const CHANNEL_BANDS = [
-  { id: "f", hi: 24, lo: 23, color: "#3a78c2", fill: "rgba(58,120,194,0.07)" },
-  { id: "s", hi: 89, lo: 90, color: "#d9a400", fill: "rgba(217,164,0,0.07)" },
+  { id: "f", hi: 24, lo: 23, colorVar: "--chart-band-fast", fillVar: "--chart-band-fast-fill" },
+  { id: "s", hi: 89, lo: 90, colorVar: "--chart-band-slow", fillVar: "--chart-band-slow-fill" },
 ];
 const isBandSeries = (name) => String(name).startsWith("__band");
 
@@ -959,9 +1004,10 @@ function channelBandSeries(secid, dates, yAxisIndex) {
     // 差值系列的折线落在上轨、areaStyle 填满下轨↔上轨。两系列均静默、不进 legend/tooltip。
     // 必须与「指数点位」线同轴（价格轴）：点位作叠加线时在副轴(1)，点位为主图时在主轴(0)。
     const diff = upper.map((u, i) => (u != null && lower[i] != null ? u - lower[i] : null));
-    const common = { type: "line", yAxisIndex, stack: `band_${cfg.id}`, showSymbol: false, symbol: "none", silent: true, z: 1, emphasis: { disabled: true }, lineStyle: { color: cfg.color, width: 1 }, itemStyle: { color: cfg.color } };
+    const color = cssVar(cfg.colorVar);
+    const common = { type: "line", yAxisIndex, stack: `band_${cfg.id}`, showSymbol: false, symbol: "none", silent: true, z: 1, emphasis: { disabled: true }, lineStyle: { color, width: 1 }, itemStyle: { color } };
     out.push({ ...common, name: `__band_${cfg.id}_lo`, data: lower, areaStyle: { opacity: 0 } });
-    out.push({ ...common, name: `__band_${cfg.id}_hi`, data: diff, areaStyle: { color: cfg.fill } });
+    out.push({ ...common, name: `__band_${cfg.id}_hi`, data: diff, areaStyle: { color: cssVar(cfg.fillVar) } });
   });
   return out;
 }
@@ -974,7 +1020,7 @@ function renderChart(series, pointValues, stats, metric, secid) {
   // 同时清掉可能指向已 dispose/旧页实例的 chart 句柄，防止 onresize 调到死实例报错。
   if (!window.echarts) {
     if (chart) { try { chart.dispose(); } catch (e) {} chart = null; }
-    el.innerHTML = `<div class="chart-fallback">${echartsPromise ? "图表组件加载中…" : "图表组件加载失败，统计分析与明细数据仍可查看。"}</div>`;
+    el.innerHTML = `<div class="chart-fallback">${echartsPromise ? t("chart.loading") : t("chart.failed")}</div>`;
     return;
   }
   if (chart) chart.dispose();
@@ -987,31 +1033,33 @@ function renderChart(series, pointValues, stats, metric, secid) {
   });
   const marks = [];
   const bands = Core.semanticBands(stats, metric.higherIsBetter);
-  if (bands && detailState.showQuantiles) marks.push(mark(bands.danger, "#c63f36", "危险"), mark(stats.median, "#7b8794", "中位"), mark(bands.chance, "#2f9b62", "机会"));
-  if (stats && detailState.showStd) marks.push(mark(stats.stdUpper, "#8b5cf6", "+1σ"), mark(stats.stdLower, "#8b5cf6", "-1σ"));
+  if (bands && detailState.showQuantiles) marks.push(mark(bands.danger, cssVar("--band-danger"), t("mark.danger")), mark(stats.median, cssVar("--band-median"), t("mark.median")), mark(bands.chance, cssVar("--band-chance"), t("mark.chance")));
+  if (stats && detailState.showStd) marks.push(mark(stats.stdUpper, cssVar("--chart-ma"), "+1σ"), mark(stats.stdLower, cssVar("--chart-ma"), "-1σ"));
   const maValues = detailState.ma ? Core.movingAverage(series.values, detailState.ma) : null;
   // 配色——统一「线条」与「图例/tooltip 圆点」：ECharts 折线的图例标记和 tooltip 圆点
   // 取的是 itemStyle.color，只设 lineStyle.color 会让它们回退到默认调色板、与线对不上。
   // 故每条线都把 lineStyle.color 与 itemStyle.color 设成同一颜色。
-  const POINT_COLOR = "#7fc8a0";   // 指数点位：浅绿色 + 色块填充
-  const METRIC_COLOR = "#2f6190";  // 当前选中的估值指标：深蓝色
-  const MA_COLOR = "#8b5cf6";
+  // 颜色一律现读 design token（--chart-*）：主题切换后的重绘自动拿到当前主题值。
+  const POINT_COLOR = cssVar("--chart-point");   // 指数点位：浅绿色 + 色块填充
+  const METRIC_COLOR = cssVar("--chart-metric"); // 当前选中的估值指标
+  const MA_COLOR = cssVar("--chart-ma");
   const greenArea = { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-    { offset: 0, color: "rgba(127,200,160,.42)" }, { offset: 1, color: "rgba(127,200,160,.05)" },
+    { offset: 0, color: cssVar("--chart-point-fill-strong") }, { offset: 1, color: cssVar("--chart-point-fill-weak") },
   ]) };
   // 视觉层级：指数点位是"基准"（浅绿填充、占主视觉）；当前估值指标是"会变化的辅助线"
   // （深蓝细线叠加其上）。仅有点位的指数则点位本身即主体（也用浅绿）。
   const metricColor = showPoint ? METRIC_COLOR : POINT_COLOR;
+  const metricLabel = mtx(metric, "label");
   const metricSeries = {
-    name: metric.label, type: "line", data: series.values, showSymbol: false, connectNulls: true,
+    name: metricLabel, type: "line", data: series.values, showSymbol: false, connectNulls: true,
     lineStyle: { color: metricColor, width: 2 }, itemStyle: { color: metricColor },
     markLine: marks.length ? { symbol: "none", silent: true, data: marks } : undefined,
   };
   if (!showPoint) metricSeries.areaStyle = greenArea;
   const chartSeries = [];
-  if (showPoint) chartSeries.push({ name: "指数点位", type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: POINT_COLOR, width: 1 }, itemStyle: { color: POINT_COLOR }, areaStyle: greenArea });
+  if (showPoint) chartSeries.push({ name: t("metric.close.label"), type: "line", yAxisIndex: 1, data: pointValues, showSymbol: false, connectNulls: true, lineStyle: { color: POINT_COLOR, width: 1 }, itemStyle: { color: POINT_COLOR }, areaStyle: greenArea });
   chartSeries.push(metricSeries);
-  if (maValues) chartSeries.push({ name: `${metric.short} MA${detailState.ma}`, type: "line", data: maValues, showSymbol: false, connectNulls: true, lineStyle: { color: MA_COLOR, width: 1.6 }, itemStyle: { color: MA_COLOR } });
+  if (maValues) chartSeries.push({ name: `${mtx(metric, "short")} MA${detailState.ma}`, type: "line", data: maValues, showSymbol: false, connectNulls: true, lineStyle: { color: MA_COLOR, width: 1.6 }, itemStyle: { color: MA_COLOR } });
   // 通道带跟着「价格(点位)」走：点位为主图(close)时挂主轴；点位作叠加线时挂副轴、与之同轴。
   // 仅当图上确有价格表达时才画；不进 legend、不进 tooltip（参数不外露）。
   const showBand = detailState.showBand && (detailState.metric === "close" || showPoint);
@@ -1021,27 +1069,29 @@ function renderChart(series, pointValues, stats, metric, secid) {
   chart.setOption({
     animation: false,
     grid: { left: 64, right: showPoint ? 72 : 28, top: 40, bottom: 72 },
-    legend: { bottom: 8, data: legendData, textStyle: { color: "#586473" } },
+    legend: { bottom: 8, data: legendData, textStyle: { color: cssVar("--chart-legend-text") } },
     tooltip: {
       trigger: "axis",
+      backgroundColor: cssVar("--chart-tooltip-bg"), borderColor: cssVar("--chart-tooltip-border"),
+      textStyle: { color: cssVar("--chart-tooltip-ink") },
       formatter: (items) => {
         const rows = items.filter((item) => !isBandSeries(item.seriesName));
         if (!rows.length) return "";
-        return `${rows[0].axisValue}<br>${rows.map((item) => `${item.marker}${item.seriesName} <b>${fmt(item.data)}${item.seriesName === metric.label ? metric.unit || "" : ""}</b>`).join("<br>")}`;
+        return `${rows[0].axisValue}<br>${rows.map((item) => `${item.marker}${item.seriesName} <b>${fmt(item.data)}${item.seriesName === metricLabel ? metric.unit || "" : ""}</b>`).join("<br>")}`;
       },
     },
     xAxis: {
       type: "category", data: series.dates, boundaryGap: false,
-      axisLine: { lineStyle: { color: "#cfd7df" } },
-      axisLabel: { color: "#909aa8", fontSize: 11 },
+      axisLine: { lineStyle: { color: cssVar("--chart-axis-line") } },
+      axisLabel: { color: cssVar("--chart-axis-label"), fontSize: 11 },
     },
     yAxis: [
-      { type: "value", scale: true, name: metric.short, splitLine: { lineStyle: { color: "#e8edf1" } }, axisLabel: { color: "#687482", fontSize: 11 } },
-      { type: "value", scale: true, name: "指数点位", show: showPoint, splitLine: { show: false }, axisLabel: { color: "#687482", fontSize: 11 } },
+      { type: "value", scale: true, name: mtx(metric, "short"), splitLine: { lineStyle: { color: cssVar("--chart-split-line") } }, axisLabel: { color: cssVar("--chart-axis-label"), fontSize: 11 } },
+      { type: "value", scale: true, name: t("metric.close.label"), show: showPoint, splitLine: { show: false }, axisLabel: { color: cssVar("--chart-axis-label"), fontSize: 11 } },
     ],
     dataZoom: [
       { type: "inside", start: 0, end: 100 },
-      { type: "slider", height: 18, bottom: 38, borderColor: "#dfe5ea", fillerColor: "rgba(79,178,199,.18)", backgroundColor: "#f4f7f8" },
+      { type: "slider", height: 18, bottom: 38, borderColor: cssVar("--chart-dz-border"), fillerColor: cssVar("--chart-dz-filler"), backgroundColor: cssVar("--chart-dz-bg") },
     ],
     series: [...bandSeries, ...chartSeries],
   });
@@ -1050,8 +1100,9 @@ function renderChart(series, pointValues, stats, metric, secid) {
 /* ---------- 8b. A股板块热力图 ---------- */
 // 维度（行业/概念）与筛选（全部/涨/跌）+ 搜索词存模块级 state：从板块详情页返回时保留上次筛选
 //（PRD §4.3）。boards 缓存按维度短 TTL，避免来回切重复打东财。
-const HEAT_DIMS = [{ k: "industry", label: "行业" }, { k: "concept", label: "主题" }];
-const HEAT_FILTERS = [{ k: "all", label: "全部" }, { k: "up", label: "仅看上涨" }, { k: "down", label: "仅看下跌" }];
+// 文案渲染时经 t("heat.dim.<k>") / t("heat.filter.<k>") 取当前语言。
+const HEAT_DIMS = [{ k: "industry" }, { k: "concept" }];
+const HEAT_FILTERS = [{ k: "all" }, { k: "up" }, { k: "down" }];
 const HEAT_TTL = 15000;
 // 行业维度只取申万一级 31 个板块（按名称匹配——东财 t:2 里申万一级以同名一级板块出现，
 // 名称稳定、自动解析其 BK 代码）。东财 t:2 混含申万一/二/三级，若全取会父子重叠、市值重复计，
@@ -1080,33 +1131,39 @@ const heatmapState = { dim: "industry", filter: "all", search: "", boards: null,
 let heatChart = null;
 let heatSearchTimer = null;
 
+// 金额（元）本地化：中文用 万亿/亿/万，英文用西方习惯 T/B/M（单位 CNY）。
 const fmtCap = (yuan) => {
   if (yuan == null || !isFinite(yuan)) return "—";
+  if (window.I18N.lang === "en") {
+    if (yuan >= 1e12) return "¥" + (yuan / 1e12).toFixed(2) + "T";
+    if (yuan >= 1e9) return "¥" + (yuan / 1e9).toFixed(1) + "B";
+    return "¥" + (yuan / 1e6).toFixed(0) + "M";
+  }
   if (yuan >= 1e12) return (yuan / 1e12).toFixed(2) + " 万亿";
   if (yuan >= 1e8) return (yuan / 1e8).toFixed(0) + " 亿";
   return (yuan / 1e4).toFixed(0) + " 万";
 };
-const fmtTime = (ts) => (ts ? new Date(ts).toLocaleTimeString("zh-CN", { hour12: false }) : "—");
+const fmtTime = (ts) => (ts ? new Date(ts).toLocaleTimeString(window.I18N.lang === "en" ? "en-US" : "zh-CN", { hour12: false }) : "—");
 
 // 内嵌首页的热力图模块标记（标题 + 控件 + 画布）。控件绑定 / 数据加载由 renderHome 负责。
 function heatmapModuleHTML() {
-  const seg = (items, active, attr) =>
-    items.map((it) => `<button class="segment ${it.k === active ? "active" : ""}" data-${attr}="${it.k}">${it.label}</button>`).join("");
+  const seg = (items, active, attr, prefix) =>
+    items.map((it) => `<button class="segment ${it.k === active ? "active" : ""}" data-${attr}="${it.k}">${t(prefix + it.k)}</button>`).join("");
   return `
     <div class="home-heatmap-head">
-      <div class="hh-title"><strong>A股板块热力图</strong><span class="hh-sub">面积=涨跌幅度（离 0 越远越大）· 颜色=涨跌（红涨绿跌）</span></div>
-      <div class="heat-foot" id="heatFoot">板块行情加载中…</div>
+      <div class="hh-title"><strong>${t("heat.title")}</strong><span class="hh-sub">${t("heat.sub")}</span></div>
+      <div class="heat-foot" id="heatFoot">${t("heat.loading")}</div>
     </div>
     <div class="heat-toolbar">
-      <div class="control-group"><span class="control-label">维度</span>
-        <div class="segmented" id="heatDimTabs">${seg(HEAT_DIMS, heatmapState.dim, "dim")}</div></div>
-      <div class="control-group"><span class="control-label">筛选</span>
-        <div class="segmented" id="heatFilterTabs">${seg(HEAT_FILTERS, heatmapState.filter, "filter")}</div></div>
-      <label class="select-control heat-search"><span>搜索</span>
-        <input id="heatSearch" type="text" autocomplete="off" placeholder="板块名称" value="${heatmapState.search.replace(/"/g, "&quot;")}"></label>
-      <button class="reset-button" id="heatRefresh" type="button">刷新</button>
+      <div class="control-group"><span class="control-label">${t("heat.dim")}</span>
+        <div class="segmented" id="heatDimTabs">${seg(HEAT_DIMS, heatmapState.dim, "dim", "heat.dim.")}</div></div>
+      <div class="control-group"><span class="control-label">${t("heat.filter")}</span>
+        <div class="segmented" id="heatFilterTabs">${seg(HEAT_FILTERS, heatmapState.filter, "filter", "heat.filter.")}</div></div>
+      <label class="select-control heat-search"><span>${t("heat.search")}</span>
+        <input id="heatSearch" type="text" autocomplete="off" placeholder="${t("heat.searchPh")}" value="${heatmapState.search.replace(/"/g, "&quot;")}"></label>
+      <button class="reset-button" id="heatRefresh" type="button">${t("heat.refresh")}</button>
     </div>
-    <div class="heat-canvas" id="heatCanvas"><div class="heat-skeleton">板块行情加载中…</div></div>`;
+    <div class="heat-canvas" id="heatCanvas"><div class="heat-skeleton">${t("heat.loading")}</div></div>`;
 }
 
 function bindHeatmapControls(reqHash) {
@@ -1135,7 +1192,7 @@ async function loadBoards(reqHash, force) {
   const fresh = heatmapState.boards && heatmapState.boardsDim === dim && Date.now() - heatmapState.ts <= HEAT_TTL;
   if (!force && fresh) { drawHeatmap(reqHash); return; }
   const canvas = document.getElementById("heatCanvas");
-  if (canvas && heatmapState.boardsDim !== dim) canvas.innerHTML = `<div class="heat-skeleton">板块行情加载中…</div>`;
+  if (canvas && heatmapState.boardsDim !== dim) canvas.innerHTML = `<div class="heat-skeleton">${t("heat.loading")}</div>`;
   try {
     const boards = shapeBoards(dim, await EM.boards(dim));
     if (routeHash() !== reqHash) return;
@@ -1146,7 +1203,7 @@ async function loadBoards(reqHash, force) {
     if (routeHash() !== reqHash) return;
     // 降级：若已有上次成功的同维度快照仍画它；否则提示失败。
     if (heatmapState.boards && heatmapState.boardsDim === dim) drawHeatmap(reqHash);
-    else if (canvas) canvas.innerHTML = `<div class="heat-empty">板块行情接口暂不可用，请稍后刷新重试。</div>`;
+    else if (canvas) canvas.innerHTML = `<div class="heat-empty">${t("heat.unavailable")}</div>`;
   }
 }
 
@@ -1165,17 +1222,17 @@ function updateHeatFoot(visible) {
   const all = heatmapState.boards || [];
   const up = all.filter((b) => b.pct != null && b.pct > 0).length;
   const down = all.filter((b) => b.pct != null && b.pct < 0).length;
-  foot.innerHTML = `显示 ${visible.length}/${all.length} 个板块 · <span class="up">涨 ${up}</span> / <span class="down">跌 ${down}</span> · 更新于 ${fmtTime(heatmapState.ts)}`;
+  foot.innerHTML = t("heat.foot", { n: visible.length, total: all.length, up, down, time: fmtTime(heatmapState.ts) });
 }
 
 function heatTooltip(b) {
   const rows = [
     `<b>${escapeHtml(b.name)}</b>`,
-    `涨跌幅 <b class="${cls(b.pct)}">${fmtPct(b.pct)}</b>`,
-    b.price != null ? `点位 ${fmt(b.price)}` : "",
-    `总市值 ${fmtCap(b.cap)}`,
-    b.turnover != null ? `换手 ${fmt(b.turnover)}%` : "",
-    b.leadName ? `领涨股 ${escapeHtml(b.leadName)} <span class="${cls(b.leadPct)}">${fmtPct(b.leadPct)}</span>` : "",
+    `${t("heat.tip.pct")} <b class="${cls(b.pct)}">${fmtPct(b.pct)}</b>`,
+    b.price != null ? `${t("heat.tip.price")} ${fmt(b.price)}` : "",
+    `${t("heat.tip.cap")} ${fmtCap(b.cap)}`,
+    b.turnover != null ? `${t("heat.tip.turnover")} ${fmt(b.turnover)}%` : "",
+    b.leadName ? `${t("heat.tip.lead")} ${escapeHtml(b.leadName)} <span class="${cls(b.leadPct)}">${fmtPct(b.leadPct)}</span>` : "",
   ].filter(Boolean);
   return rows.join("<br>");
 }
@@ -1198,7 +1255,7 @@ function drawHeatmap(reqHash) {
   const list = visibleBoards();
   updateHeatFoot(list);
   if (heatChart) { try { heatChart.dispose(); } catch (e) {} heatChart = null; }
-  if (!list.length) { canvas.innerHTML = `<div class="heat-empty">没有符合当前筛选条件的板块</div>`; return; }
+  if (!list.length) { canvas.innerHTML = `<div class="heat-empty">${t("heat.emptyFilter")}</div>`; return; }
   if (!window.echarts) {   // 降级为可点击榜单（事件委托读 data-secid）
     canvas.innerHTML = heatListHTML(list);
     const listEl = document.getElementById("heatList");
@@ -1209,20 +1266,23 @@ function drawHeatmap(reqHash) {
   heatChart = echarts.init(document.getElementById("heatChart"));
   // 面积口径：行业/概念统一 = |涨跌幅|（离 0 越远、格子越大）。市值仅作 tooltip 信息，不再决定面积。
   const area = (b) => Math.max(absPct(b), 0.01);
+  // 半透明格子实际叠在画布底色上（亮=白、暗=深灰），文字黑白判定要按同一底色复合。
+  const cellBase = hexToRgb(cssVar("--heat-cell-base"));
   const data = list.map((b) => ({
     name: b.name, value: area(b), _b: b,
     itemStyle: { color: Core.heatmapColor(b.pct) },
-    label: { color: Core.heatmapTextColor(b.pct), formatter: `${b.name}\n${fmtPct(b.pct)}` },
+    label: { color: Core.heatmapTextColor(b.pct, 4, cellBase), formatter: `${b.name}\n${fmtPct(b.pct)}` },
   }));
   heatChart.setOption({
     animation: false,
-    tooltip: { borderColor: "#dfe5ea", textStyle: { color: "#1f2733", fontSize: 12 },
+    tooltip: { backgroundColor: cssVar("--chart-tooltip-bg"), borderColor: cssVar("--chart-tooltip-border"),
+      textStyle: { color: cssVar("--chart-tooltip-ink"), fontSize: 12 },
       formatter: (p) => (p.data && p.data._b ? heatTooltip(p.data._b) : "") },
     series: [{
       type: "treemap", roam: false, nodeClick: false, breadcrumb: { show: false },
       left: 0, right: 0, top: 0, bottom: 0,
       label: { show: true, fontSize: 12, lineHeight: 15, overflow: "truncate" },
-      itemStyle: { borderColor: "#ffffff", borderWidth: 0, gapWidth: 2 },
+      itemStyle: { borderColor: cssVar("--heat-cell-base"), borderWidth: 0, gapWidth: 2 },
       data,
     }],
   });
@@ -1236,13 +1296,13 @@ let boardChart = null;
 
 async function renderBoard(secid) {
   const reqHash = location.hash;
-  view.innerHTML = `<div class="loading">加载中…</div>`;
+  view.innerHTML = `<div class="loading">${t("common.loading")}</div>`;
   const cached = (heatmapState.boards || []).find((b) => b.secid === secid);
   const [quote, kdata] = await Promise.all([EM.quote(secid).catch(() => null), EM.kline(secid).catch(() => null)]);
   if (location.hash !== reqHash) return;
   const hasK = !!(kdata && kdata.rows && kdata.rows.length);
   if (!quote && !hasK && !cached) {
-    view.innerHTML = `<div class="error">未找到该板块的行情数据，请稍后重试。<br><a class="back" href="#/">返回首页</a></div>`;
+    view.innerHTML = `<div class="error">${t("board.notFound")}<br><a class="back" href="#/">${t("backLink.home")}</a></div>`;
     return;
   }
   const name = escapeHtml((quote && quote.name) || (cached && cached.name) || (kdata && kdata.name) || secid);
@@ -1253,26 +1313,26 @@ async function renderBoard(secid) {
   // 板块级补充信息只在从热力图带过来的 cached 里有（实时 quote 不含家数/领涨股）。
   const chips = [];
   if (cached) {
-    if (cached.turnover != null) chips.push(["换手率", fmt(cached.turnover) + "%"]);
-    if (cached.cap != null) chips.push(["总市值", fmtCap(cached.cap)]);
-    if (cached.inflow != null) chips.push(["主力净流入", fmtCap(cached.inflow)]);
-    if (cached.up != null && cached.down != null) chips.push(["涨跌家数", `<span class="up">${cached.up}</span> / <span class="down">${cached.down}</span>`]);
-    if (cached.leadName) chips.push(["领涨股", `${escapeHtml(cached.leadName)} <span class="${cls(cached.leadPct)}">${fmtPct(cached.leadPct)}</span>`]);
+    if (cached.turnover != null) chips.push([t("board.turnover"), fmt(cached.turnover) + "%"]);
+    if (cached.cap != null) chips.push([t("board.cap"), fmtCap(cached.cap)]);
+    if (cached.inflow != null) chips.push([t("board.inflow"), fmtCap(cached.inflow)]);
+    if (cached.up != null && cached.down != null) chips.push([t("board.updown"), `<span class="up">${cached.up}</span> / <span class="down">${cached.down}</span>`]);
+    if (cached.leadName) chips.push([t("board.lead"), `${escapeHtml(cached.leadName)} <span class="${cls(cached.leadPct)}">${fmtPct(cached.leadPct)}</span>`]);
   }
   const chgStr = chg == null ? "" : `  ${chg >= 0 ? "+" : ""}${fmt(chg)}`;
   view.innerHTML = `
     <section class="board-workspace">
       <div class="instrument-strip">
-        <div><a class="back" href="#/">‹ 返回首页</a>
-          <div class="instrument-title"><strong>${name}</strong><span>${escapeHtml(code)} · ${escapeHtml(secid)}</span></div></div>
+        <div><a class="back" href="#/">${t("back.home")}</a>
+          <div class="instrument-title"><strong>${name}</strong><span class="instrument-code">${escapeHtml(code)}</span></div></div>
         <div class="market-quote">${price != null
           ? `<strong class="${cls(pct)}">${fmt(price)}</strong><span class="${cls(pct)}">${fmtPct(pct)}${chgStr}</span>`
-          : `<span class="quote-pending">行情快照暂不可用</span>`}</div>
+          : `<span class="quote-pending">${t("quote.unavailable")}</span>`}</div>
       </div>
       ${chips.length ? `<div class="board-chips">${chips.map(([k, v]) => `<div class="board-chip"><span class="bc-k">${k}</span><span class="bc-v">${v}</span></div>`).join("")}</div>` : ""}
       <div class="analysis-card board-card">
         <div class="chart-pane">
-          <div class="chart-heading"><strong>板块走势（日K）</strong></div>
+          <div class="chart-heading"><strong>${t("board.chart")}</strong></div>
           <div id="boardChart" class="board-chart"></div>
         </div>
       </div>
@@ -1289,23 +1349,26 @@ function drawBoardChart(kdata) {
   // 早退分支先清掉可能指向旧/已替换容器的实例（与 renderChart 同口径），避免 onresize 调到死实例。
   if (!window.echarts || !rows.length) {
     if (boardChart) { try { boardChart.dispose(); } catch (e) {} boardChart = null; }
-    el.innerHTML = `<div class="chart-fallback">${!window.echarts ? (echartsPromise ? "图表组件加载中…" : "图表组件加载失败") : "暂无 K 线数据"}</div>`;
+    el.innerHTML = `<div class="chart-fallback">${!window.echarts ? (echartsPromise ? t("chart.loading") : t("chart.failedShort")) : t("chart.noK")}</div>`;
     return;
   }
   if (boardChart) boardChart.dispose();
   boardChart = echarts.init(el);
   const dates = rows.map((r) => r.date);
   const candle = rows.map((r) => [r.open, r.close, r.low, r.high]);
+  const upColor = cssVar("--up"), downColor = cssVar("--down");
   boardChart.setOption({
     animation: false,
     grid: { left: 56, right: 20, top: 24, bottom: 60 },
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-    xAxis: { type: "category", data: dates, boundaryGap: true, axisLine: { lineStyle: { color: "#cfd7df" } }, axisLabel: { color: "#909aa8", fontSize: 11 } },
-    yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "#e8edf1" } }, axisLabel: { color: "#687482", fontSize: 11 } },
-    dataZoom: [{ type: "inside", start: 70, end: 100 }, { type: "slider", height: 18, bottom: 24, start: 70, end: 100, borderColor: "#dfe5ea", fillerColor: "rgba(79,178,199,.18)", backgroundColor: "#f4f7f8" }],
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" },
+      backgroundColor: cssVar("--chart-tooltip-bg"), borderColor: cssVar("--chart-tooltip-border"),
+      textStyle: { color: cssVar("--chart-tooltip-ink") } },
+    xAxis: { type: "category", data: dates, boundaryGap: true, axisLine: { lineStyle: { color: cssVar("--chart-axis-line") } }, axisLabel: { color: cssVar("--chart-axis-label"), fontSize: 11 } },
+    yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: cssVar("--chart-split-line") } }, axisLabel: { color: cssVar("--chart-axis-label"), fontSize: 11 } },
+    dataZoom: [{ type: "inside", start: 70, end: 100 }, { type: "slider", height: 18, bottom: 24, start: 70, end: 100, borderColor: cssVar("--chart-dz-border"), fillerColor: cssVar("--chart-dz-filler"), backgroundColor: cssVar("--chart-dz-bg") }],
     series: [{
       type: "candlestick", data: candle,
-      itemStyle: { color: "#e0524a", color0: "#2bab6b", borderColor: "#e0524a", borderColor0: "#2bab6b" },
+      itemStyle: { color: upColor, color0: downColor, borderColor: upColor, borderColor0: downColor },
     }],
   });
   window.onresize = () => boardChart && boardChart.resize();
@@ -1324,13 +1387,16 @@ function localSearch(kw) {
     .map((p) => ({ secid: p.secid, code: p.code, name: p.name, type }));
   return hit(POPULAR, "指数").concat(hit(FUNDS, "基金"));
 }
+// 类型标签本地化：本地/东财返回的类型是中文（"指数"/"基金"），英文界面映射为 Index/Fund；
+// 未知类型（远程回传的其他 SecurityTypeName）原样展示。
+const secTypeLabel = (type) => (type === "指数" ? t("type.index") : type === "基金" ? t("type.fund") : type);
 function renderSuggest(list) {
   curResults = list; activeIdx = -1;
-  if (!list.length) { suggestBox.innerHTML = `<div class="suggest-empty">未找到匹配的指数或基金</div>`; suggestBox.hidden = false; return; }
+  if (!list.length) { suggestBox.innerHTML = `<div class="suggest-empty">${t("search.empty")}</div>`; suggestBox.hidden = false; return; }
   suggestBox.innerHTML = list.map((x, i) =>
     `<div class="suggest-item" data-i="${i}" data-secid="${escapeHtml(x.secid)}">
        <span class="nm">${escapeHtml(x.name)}</span><span class="cd">${escapeHtml(x.code)}</span>
-       ${x.type ? `<span class="tag">${escapeHtml(x.type)}</span>` : ""}
+       ${x.type ? `<span class="tag">${escapeHtml(secTypeLabel(x.type))}</span>` : ""}
      </div>`).join("");
   suggestBox.hidden = false;
 }
@@ -1348,7 +1414,7 @@ searchInput.addEventListener("input", () => {
   // 本地主表（indexes.json）命中先秒出，保证离线/快速；
   const local = localSearch(kw);
   if (local.length) renderSuggest(local);
-  else { suggestBox.innerHTML = `<div class="suggest-empty">搜索中…</div>`; suggestBox.hidden = false; }
+  else { suggestBox.innerHTML = `<div class="suggest-empty">${t("search.searching")}</div>`; suggestBox.hidden = false; }
   // 始终再拉一次远程（含基金），返回后与本地按 secid 去重合并——
   // 否则关键词命中某个指数时会短路掉基金结果（如「科创50」搜不到对应 ETF）。
   clearTimeout(searchTimer);
@@ -1371,5 +1437,72 @@ searchInput.addEventListener("keydown", (e) => {
 });
 document.addEventListener("click", (e) => { if (!e.target.closest("#navSearch")) suggestBox.hidden = true; });
 
+/* ---------- 10. 主题切换 + 语言切换（导航栏右上角） ---------- */
+// 主题：暗色为默认（:root 即暗色 token），仅亮色打 data-theme="light"；持久化 pref-theme。
+// 首屏由 index.html <head> 的内联脚本先行应用，避免亮色用户闪暗色。
+const THEME_KEY = "pref-theme";
+const currentTheme = () => (document.documentElement.dataset.theme === "light" ? "light" : "dark");
+function applyTheme(theme) {
+  if (theme === "light") document.documentElement.dataset.theme = "light";
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* ignore */ }
+  const sw = document.getElementById("themeSwitch");
+  if (sw) sw.setAttribute("aria-checked", String(theme === "dark"));
+}
+
+// 语言/主题切换后原地重渲染当前页：CSS 部分换主题即时生效，但 ECharts 画布颜色与
+// 所有 JS 拼的文案要重画才会更新。preserve flag 让详情页保住用户当前筛选。
+function rerenderForPrefs() {
+  preserveDetailStateOnce = true;
+  applyStaticChrome();
+  router();
+}
+
+// 静态框架（导航/页脚等非 router 渲染的部分）按当前语言刷新
+function applyStaticChrome() {
+  document.documentElement.lang = window.I18N.lang === "en" ? "en" : "zh-CN";
+  document.title = t("doc.title");
+  const desc = document.querySelector('meta[name="description"]');
+  if (desc) desc.setAttribute("content", t("doc.description"));
+  document.getElementById("brandName").textContent = t("brand.name");
+  searchInput.placeholder = t("search.placeholder");
+  document.getElementById("footerText").textContent = t("footer.text");
+  document.getElementById("langCurrent").textContent = window.I18N.lang === "en" ? "English" : "中文";
+  document.querySelectorAll("#langDropdown .lang-option").forEach((btn) => btn.classList.toggle("active", btn.dataset.lang === window.I18N.lang));
+  const langBtn = document.getElementById("langButton");
+  if (langBtn) langBtn.setAttribute("aria-label", t("lang.label"));
+  const sw = document.getElementById("themeSwitch");
+  if (sw) sw.setAttribute("aria-label", t("theme.toggle"));
+}
+
+function bindTopbarPrefs() {
+  const sw = document.getElementById("themeSwitch");
+  sw.setAttribute("aria-checked", String(currentTheme() === "dark"));
+  sw.addEventListener("click", () => {
+    applyTheme(currentTheme() === "dark" ? "light" : "dark");
+    rerenderForPrefs();
+  });
+
+  const menu = document.getElementById("langMenu");
+  const button = document.getElementById("langButton");
+  const dropdown = document.getElementById("langDropdown");
+  const closeDropdown = () => { dropdown.hidden = true; button.setAttribute("aria-expanded", "false"); };
+  button.addEventListener("click", () => {
+    dropdown.hidden = !dropdown.hidden;
+    button.setAttribute("aria-expanded", String(!dropdown.hidden));
+  });
+  dropdown.addEventListener("click", (e) => {
+    const option = e.target.closest("[data-lang]");
+    if (!option) return;
+    closeDropdown();
+    if (option.dataset.lang === window.I18N.lang) return;
+    window.I18N.setLang(option.dataset.lang);
+    rerenderForPrefs();
+  });
+  document.addEventListener("click", (e) => { if (!e.target.closest("#langMenu") && !dropdown.hidden) closeDropdown(); });
+}
+
 /* ---------- 启动 ---------- */
+bindTopbarPrefs();
+applyStaticChrome();
 loadIndexes().then(router);

@@ -259,14 +259,21 @@
     const rgb = Number(pct) >= 0 ? HEAT_UP_RGB : HEAT_DOWN_RGB;
     return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${heatAlpha(pct, span).toFixed(3)})`;
   }
-  // 单元格 = 纯色 over 白底，复合后算感知亮度：淡格（高亮度）用深字、浓格（低亮度）用白字，
-  // 解决"特定不透明度背景下文字看不清"的问题。返回十六进制文字色。
-  function heatmapTextColor(pct, maxAbs = 4) {
-    if (pct == null || !Number.isFinite(Number(pct))) return "#1f2733";
-    const span = Number(maxAbs) > 0 ? Number(maxAbs) : 4;
-    const rgb = Number(pct) >= 0 ? HEAT_UP_RGB : HEAT_DOWN_RGB;
-    const a = heatAlpha(pct, span);
-    const lum = [0.299, 0.587, 0.114].reduce((sum, w, i) => sum + w * (rgb[i] * a + 255 * (1 - a)), 0);
+  // 单元格 = 纯色 over 画布底色（base，默认白底、暗色主题传暗底 RGB 数组），复合后算感知亮度：
+  // 淡格复合结果亮（浅底）用深字、暗（浓格或暗底）用白字，解决"特定不透明度背景下文字看不清"。
+  // 返回十六进制文字色。缺失/非法 pct 按缺失灰（与 HEAT_MISSING 同源、alpha .16）复合判定。
+  function heatmapTextColor(pct, maxAbs = 4, base = [255, 255, 255]) {
+    const bg = Array.isArray(base) && base.length === 3 && base.every((v) => Number.isFinite(Number(v)))
+      ? base.map(Number) : [255, 255, 255];
+    let rgb, a;
+    if (pct == null || !Number.isFinite(Number(pct))) {
+      rgb = [150, 160, 170]; a = 0.16;   // 与 HEAT_MISSING 同源
+    } else {
+      const span = Number(maxAbs) > 0 ? Number(maxAbs) : 4;
+      rgb = Number(pct) >= 0 ? HEAT_UP_RGB : HEAT_DOWN_RGB;
+      a = heatAlpha(pct, span);
+    }
+    const lum = [0.299, 0.587, 0.114].reduce((sum, w, i) => sum + w * (rgb[i] * a + bg[i] * (1 - a)), 0);
     return lum > 150 ? "#1f2733" : "#ffffff";
   }
 
