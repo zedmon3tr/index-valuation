@@ -156,10 +156,15 @@ def main():
         "count": len(out),
         "funds": out,
     }
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, "w", encoding="utf-8") as fp:
-        json.dump(payload, fp, ensure_ascii=False, indent=2)
-    print(f"\n写入 {OUT}：{ok} 成功 / {miss} 失败 / 共 {len(out)}")
+    # 整体全失败时不覆盖既有文件（沿用历史净值写入的"失败不写空"原则，避免接口临时挂掉
+    # 时用全 null 的快照覆盖掉昨天还可用的净值，砸坏首页/详情页实时价与定投计算器默认值）。
+    if ok > 0 or not os.path.exists(OUT):
+        os.makedirs(os.path.dirname(OUT), exist_ok=True)
+        with open(OUT, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+        print(f"\n写入 {OUT}：{ok} 成功 / {miss} 失败 / 共 {len(out)}")
+    else:
+        print(f"\n⚠ 净值全部抓取失败，保留既有 {OUT}")
 
     hist = []
     h_ok = h_miss = 0

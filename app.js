@@ -231,7 +231,10 @@ async function loadFundNavHist() {
 }
 
 /* ---------- 4. 格式化 ---------- */
-const fmt = (x, d = 2) => (x == null || !isFinite(x) ? "—" : x.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d }));
+const fmt = (x, d = 3) => (x == null || !isFinite(x) ? "—" : x.toFixed(d));
+// 东财等外部接口返回的字符串（name/code/secid 等）转义后才能拼进 innerHTML，
+// 防止接口被污染或异常返回时注入脚本（本地主表 indexes.json/funds.json 是受信数据，无需转义）。
+const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtPct = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + x.toFixed(2) + "%");
 const cls = (x) => (x == null ? "flat" : x > 0 ? "up" : x < 0 ? "down" : "flat");
 
@@ -307,7 +310,7 @@ function cardSkeleton(p) {
   return `<div class="card" id="c-${p.secid.replace(".", "_")}" onclick="location.hash='#/idx/${p.secid}'">${cardBody(p, null)}</div>`;
 }
 function cardBody(p, d) {
-  const head = `<div class="card-head"><span class="nm">${(d && d.name) || p.name}</span>${marketTag(p.market)}</div><div class="cd">${p.code}</div>`;
+  const head = `<div class="card-head"><span class="nm">${escapeHtml((d && d.name) || p.name)}</span>${marketTag(p.market)}</div><div class="cd">${p.code}</div>`;
   if (!d) return `${head}<div class="px"><span class="skeleton">加载中…</span></div>`;
   return `${head}
     <div class="px">
@@ -405,7 +408,7 @@ async function renderDetail(secid) {
     if (location.hash !== reqHash) return;
   }
 
-  const name = (quote && quote.name) || (kdata && kdata.name) || localName || secid;
+  const name = escapeHtml((quote && quote.name) || (kdata && kdata.name) || localName || secid);
   // 展示用 code 取标的自身（基金显示自己的代码）；估值用 code 走 secid_to_code（基金→跟踪指数）。
   const code = (quote && quote.code) || (fund && fund.code) || (known && known.code) || secid.split(".")[1];
   const trackName = fund ? ((POPULAR.find((p) => p.code === fund.trackIndex) || {}).name || fund.trackIndex) : "";
@@ -464,7 +467,7 @@ async function renderDetail(secid) {
       <div class="instrument-strip">
         <div>
           <a class="back" href="#/">‹ 返回${fund ? "首页" : "指数列表"}</a>
-          <div class="instrument-title"><strong>${name}</strong><span>${code} · ${secid}</span></div>
+          <div class="instrument-title"><strong>${name}</strong><span>${escapeHtml(code)} · ${escapeHtml(secid)}</span></div>
         </div>
         <div class="market-quote" id="marketQuote">${marketQuoteHTML(quote, renderedFromLocal)}</div>
       </div>
@@ -1167,12 +1170,12 @@ function updateHeatFoot(visible) {
 
 function heatTooltip(b) {
   const rows = [
-    `<b>${b.name}</b>`,
+    `<b>${escapeHtml(b.name)}</b>`,
     `涨跌幅 <b class="${cls(b.pct)}">${fmtPct(b.pct)}</b>`,
     b.price != null ? `点位 ${fmt(b.price)}` : "",
     `总市值 ${fmtCap(b.cap)}`,
     b.turnover != null ? `换手 ${fmt(b.turnover)}%` : "",
-    b.leadName ? `领涨股 ${b.leadName} <span class="${cls(b.leadPct)}">${fmtPct(b.leadPct)}</span>` : "",
+    b.leadName ? `领涨股 ${escapeHtml(b.leadName)} <span class="${cls(b.leadPct)}">${fmtPct(b.leadPct)}</span>` : "",
   ].filter(Boolean);
   return rows.join("<br>");
 }
@@ -1181,8 +1184,8 @@ function heatTooltip(b) {
 // 用 data-secid + 事件委托（不在 HTML 属性里内联拼 secid），点击绑定见 drawHeatmap 的降级分支。
 function heatListHTML(list) {
   const rows = [...list].sort((a, b) => (b.pct == null ? -1e9 : b.pct) - (a.pct == null ? -1e9 : a.pct))
-    .map((b) => `<div class="heat-row" data-secid="${b.secid}">
-        <span class="hr-name">${b.name}</span>
+    .map((b) => `<div class="heat-row" data-secid="${escapeHtml(b.secid)}">
+        <span class="hr-name">${escapeHtml(b.name)}</span>
         <span class="hr-cap">${fmtCap(b.cap)}</span>
         <span class="hr-pct ${cls(b.pct)}">${fmtPct(b.pct)}</span></div>`).join("");
   return `<div class="heat-list" id="heatList">${rows}</div>`;
@@ -1242,7 +1245,7 @@ async function renderBoard(secid) {
     view.innerHTML = `<div class="error">未找到该板块的行情数据，请稍后重试。<br><a class="back" href="#/">返回首页</a></div>`;
     return;
   }
-  const name = (quote && quote.name) || (cached && cached.name) || (kdata && kdata.name) || secid;
+  const name = escapeHtml((quote && quote.name) || (cached && cached.name) || (kdata && kdata.name) || secid);
   const code = secid.split(".")[1] || secid;
   const price = (quote && quote.price != null) ? quote.price : (cached && cached.price);
   const pct = (quote && quote.pct != null) ? quote.pct : (cached && cached.pct);
@@ -1254,14 +1257,14 @@ async function renderBoard(secid) {
     if (cached.cap != null) chips.push(["总市值", fmtCap(cached.cap)]);
     if (cached.inflow != null) chips.push(["主力净流入", fmtCap(cached.inflow)]);
     if (cached.up != null && cached.down != null) chips.push(["涨跌家数", `<span class="up">${cached.up}</span> / <span class="down">${cached.down}</span>`]);
-    if (cached.leadName) chips.push(["领涨股", `${cached.leadName} <span class="${cls(cached.leadPct)}">${fmtPct(cached.leadPct)}</span>`]);
+    if (cached.leadName) chips.push(["领涨股", `${escapeHtml(cached.leadName)} <span class="${cls(cached.leadPct)}">${fmtPct(cached.leadPct)}</span>`]);
   }
   const chgStr = chg == null ? "" : `  ${chg >= 0 ? "+" : ""}${fmt(chg)}`;
   view.innerHTML = `
     <section class="board-workspace">
       <div class="instrument-strip">
         <div><a class="back" href="#/">‹ 返回首页</a>
-          <div class="instrument-title"><strong>${name}</strong><span>${code} · ${secid}</span></div></div>
+          <div class="instrument-title"><strong>${name}</strong><span>${escapeHtml(code)} · ${escapeHtml(secid)}</span></div></div>
         <div class="market-quote">${price != null
           ? `<strong class="${cls(pct)}">${fmt(price)}</strong><span class="${cls(pct)}">${fmtPct(pct)}${chgStr}</span>`
           : `<span class="quote-pending">行情快照暂不可用</span>`}</div>
@@ -1325,12 +1328,18 @@ function renderSuggest(list) {
   curResults = list; activeIdx = -1;
   if (!list.length) { suggestBox.innerHTML = `<div class="suggest-empty">未找到匹配的指数或基金</div>`; suggestBox.hidden = false; return; }
   suggestBox.innerHTML = list.map((x, i) =>
-    `<div class="suggest-item" data-i="${i}" onmousedown="goto('${x.secid}')">
-       <span class="nm">${x.name}</span><span class="cd">${x.code}</span>
-       ${x.type ? `<span class="tag">${x.type}</span>` : ""}
+    `<div class="suggest-item" data-i="${i}" data-secid="${escapeHtml(x.secid)}">
+       <span class="nm">${escapeHtml(x.name)}</span><span class="cd">${escapeHtml(x.code)}</span>
+       ${x.type ? `<span class="tag">${escapeHtml(x.type)}</span>` : ""}
      </div>`).join("");
   suggestBox.hidden = false;
 }
+// secid 来自外部搜索接口，绝不拼进内联事件属性（曾经的 onmousedown="goto('${secid}')"
+// 一旦 secid 含单引号/反斜杠即可逃出字符串注入任意 JS）；统一走 data-secid + 事件委托。
+suggestBox.addEventListener("mousedown", (e) => {
+  const item = e.target.closest(".suggest-item");
+  if (item && item.dataset.secid) window.goto(item.dataset.secid);
+});
 window.goto = (secid) => { suggestBox.hidden = true; searchInput.value = ""; location.hash = "#/idx/" + secid; };
 
 searchInput.addEventListener("input", () => {
