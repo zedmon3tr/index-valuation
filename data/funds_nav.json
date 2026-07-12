@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-11 10:58:43",
+  "generatedAt": "2026-07-12 11:10:31",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -195,7 +195,7 @@
       "navRaw": "2.4277",
       "navDate": "2026-07-09",
       "estimate": 2.434,
-      "estimateChangePct": "0.28",
+      "estimateChangePct": "0.27",
       "estimateTime": "2026-07-11 04:00",
       "source": "eastmoney:fundgz"
     }
