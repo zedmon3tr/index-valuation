@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-25 14:59:05",
+  "generatedAt": "2026-09-26 14:07:34",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -35,13 +35,13 @@
       "name": "科创50ETF华夏",
       "secid": "1.588000",
       "trackIndex": "000688",
-      "nav": 1.713,
-      "navRaw": "1.7127",
-      "navDate": "2026-09-24",
+      "nav": null,
+      "navRaw": null,
+      "navDate": null,
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "eastmoney:lsjz"
+      "source": "ERROR: URLError: <urlopen error _ssl.c:999: The handshake operation timed out>"
     },
     {
       "code": "159915",
