@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-01 16:56:57",
+  "generatedAt": "2026-10-02 16:10:08",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -35,13 +35,13 @@
       "name": "科创50ETF华夏",
       "secid": "1.588000",
       "trackIndex": "000688",
-      "nav": null,
-      "navRaw": null,
-      "navDate": null,
+      "nav": 1.616,
+      "navRaw": "1.6163",
+      "navDate": "2026-09-30",
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "ERROR: URLError: <urlopen error _ssl.c:999: The handshake operation timed out>"
+      "source": "eastmoney:lsjz"
     },
     {
       "code": "159915",
@@ -61,13 +61,13 @@
       "name": "中证500ETF南方",
       "secid": "1.510500",
       "trackIndex": "000905",
-      "nav": null,
-      "navRaw": null,
-      "navDate": null,
+      "nav": 7.468,
+      "navRaw": "7.4683",
+      "navDate": "2026-09-30",
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "ERROR: URLError: <urlopen error _ssl.c:999: The handshake operation timed out>"
+      "source": "eastmoney:lsjz"
     },
     {
       "code": "512100",
