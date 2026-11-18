@@ -40,7 +40,10 @@ try:
     import akshare as ak
     import pandas as pd
     import requests
-    from akshare.stock_feature.stock_a_indicator import get_cookie_csrf
+    try:  # akshare ≥1.20：模块重组到 akshare.stock.valuation
+        from akshare.stock.valuation.stock_a_indicator import get_cookie_csrf
+    except ImportError:  # akshare ≤1.19 老路径
+        from akshare.stock_feature.stock_a_indicator import get_cookie_csrf
 except Exception as e:  # pragma: no cover
     print("依赖缺失，请先 `pip install akshare`：", e)
     sys.exit(1)
@@ -281,7 +284,7 @@ def _normalize_close_df(df, start=POINT_START):
     frame = df.reset_index()
     cols = {str(c).strip().lower(): c for c in frame.columns}
     date_col = next((cols[k] for k in ("date", "日期", "trade_date", "index") if k in cols), None)
-    close_col = next((cols[k] for k in ("close", "收盘", "收盘价", "最新价") if k in cols), None)
+    close_col = next((cols[k] for k in ("close", "收盘", "收盘价", "最新价", "latest") if k in cols), None)
     if date_col is None or close_col is None:
         return None, None
     pairs = {}
@@ -299,6 +302,14 @@ def _normalize_close_df(df, start=POINT_START):
     return dates, [pairs[d] for d in dates]
 
 
+def _ak(new_name, old_name):
+    """取 akshare 接口：优先 1.20.44+ 的新名，没有再退回老名（兼容新旧两代 akshare）。"""
+    fn = getattr(ak, new_name, None) or getattr(ak, old_name, None)
+    if fn is None:
+        raise AttributeError(f"akshare 无 {new_name} / {old_name}")
+    return fn
+
+
 def _fetch_point_history(code, name, secid):
     """多源兜底抓历史收盘点位。返回 (dates, closes, source) 或 (None, None, None)。
 
@@ -309,14 +320,15 @@ def _fetch_point_history(code, name, secid):
     if code.isdigit():
         sym = ("sh" if secid.startswith("1.") else "sz") + code
         attempts = [
-            ("sina", lambda: ak.stock_zh_index_daily(symbol=sym)),
-            ("tencent", lambda: ak.stock_zh_index_daily_tx(symbol=sym)),
-            ("em", lambda: ak.stock_zh_index_daily_em(symbol=sym, start_date=POINT_START.replace("-", ""), end_date=today)),
+            ("sina", lambda: _ak("index_zh_daily_sina", "stock_zh_index_daily")(symbol=sym)),
+            ("tencent", lambda: _ak("index_zh_daily_tx", "stock_zh_index_daily_tx")(symbol=sym)),
+            ("em", lambda: _ak("index_zh_daily_em", "stock_zh_index_daily_em")(
+                symbol=sym, start_date=POINT_START.replace("-", ""), end_date=today)),
         ]
     elif code in ("HSI", "HSTECH"):
         attempts = [
-            ("sina_hk", lambda: ak.stock_hk_index_daily_sina(symbol=code)),
-            ("em_hk", lambda: ak.stock_hk_index_daily_em(symbol=code)),
+            ("sina_hk", lambda: _ak("index_hk_daily_sina", "stock_hk_index_daily_sina")(symbol=code)),
+            ("em_hk", lambda: _ak("index_hk_daily_em", "stock_hk_index_daily_em")(symbol=code)),
         ]
     else:
         # 美股/全球指数：接口与符号格式不稳，尽力一次，失败交给前端实时兜底。

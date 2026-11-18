@@ -29,7 +29,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install akshare
+          # akshare 1.20 起重组模块、1.20.44 起接口改名；build_data.py 已兼容新旧两代，
+          # 这里下限锁到 1.20.44 以确保新名可用，同时继续跟随上游更新。
+          pip install "akshare>=1.20.44"
 
       - name: Build valuation JSON
         run: python scripts/build_data.py
