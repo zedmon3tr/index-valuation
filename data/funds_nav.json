@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-20 18:13:10",
+  "generatedAt": "2026-11-21 17:11:47",
   "source": "东方财富天天基金 fundgz / f10-lsjz",
   "note": "nav=单位净值(3位小数)；estimate=盘中实时估值；navDate=官方净值日期",
   "count": 15,
@@ -61,65 +61,65 @@
       "name": "中证500ETF南方",
       "secid": "1.510500",
       "trackIndex": "000905",
-      "nav": 6.042,
-      "navRaw": "6.0419",
-      "navDate": "2026-11-20",
+      "nav": null,
+      "navRaw": null,
+      "navDate": null,
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "eastmoney:lsjz"
+      "source": "ERROR: URLError: <urlopen error _ssl.c:1001: The handshake operation timed out>"
     },
     {
       "code": "512100",
       "name": "中证1000ETF南方",
       "secid": "1.512100",
       "trackIndex": "000852",
-      "nav": 2.298,
-      "navRaw": "2.2984",
-      "navDate": "2026-11-20",
+      "nav": null,
+      "navRaw": null,
+      "navDate": null,
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "eastmoney:lsjz"
+      "source": "ERROR: URLError: <urlopen error _ssl.c:1001: The handshake operation timed out>"
     },
     {
       "code": "513100",
       "name": "纳指ETF国泰",
       "secid": "1.513100",
       "trackIndex": "NDX",
-      "nav": 1.773,
-      "navRaw": "1.7730",
-      "navDate": "2026-11-19",
+      "nav": null,
+      "navRaw": null,
+      "navDate": null,
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "eastmoney:lsjz"
+      "source": "ERROR: URLError: <urlopen error _ssl.c:1001: The handshake operation timed out>"
     },
     {
       "code": "513130",
       "name": "恒生科技ETF华泰柏瑞",
       "secid": "1.513130",
       "trackIndex": "HSTECH",
-      "nav": 0.435,
-      "navRaw": "0.4353",
-      "navDate": "2026-11-20",
+      "nav": null,
+      "navRaw": null,
+      "navDate": null,
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "eastmoney:lsjz"
+      "source": "ERROR: URLError: <urlopen error _ssl.c:1001: The handshake operation timed out>"
     },
     {
       "code": "159919",
       "name": "沪深300ETF嘉实",
       "secid": "0.159919",
       "trackIndex": "000300",
-      "nav": 4.206,
-      "navRaw": "4.2060",
-      "navDate": "2026-11-20",
+      "nav": null,
+      "navRaw": null,
+      "navDate": null,
       "estimate": null,
       "estimateChangePct": null,
       "estimateTime": null,
-      "source": "eastmoney:lsjz"
+      "source": "ERROR: URLError: <urlopen error _ssl.c:1001: The handshake operation timed out>"
     },
     {
       "code": "510880",
